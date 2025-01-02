@@ -249,20 +249,20 @@ class Config:
         }
     )
 
-    central_bank: dict[str, Any] = field(
+    fed: dict[str, Any] = field(
         default_factory=lambda: {
-            "initial_reserve": 10_000_000,  # 初始储备金
-            "min_reserve": 5_000_000,  # 最低储备要求
-            "interest_rate": 0.05,  # 基准利率
-            "inflation_target": 0.02,  # 通胀目标
-            "reward_allocation": {  # 奖励分配预算
-                "role_rewards": 0.3,  # 30% 用于身份组奖励
-                "daily_rewards": 0.2,  # 20% 用于每日奖励
-                "activity_rewards": 0.2,  # 20% 用于活动奖励
-                "casino_operation": 0.2,  # 20% 用于赌场运营
-                "emergency_reserve": 0.1,  # 10% 用于应急储备
+            "initial_reserve": 99_999_999,
+            "min_reserve": 5_000_000,
+            "interest_rate": 0.05,
+            "inflation_target": 0.02,
+            "reward_allocation": {
+                "role_rewards": 0.3,
+                "daily_rewards": 0.2,
+                "activity_rewards": 0.2,
+                "casino_operation": 0.2,
+                "emergency_reserve": 0.1,
             },
-            "reward_limits": {  # 各类奖励的每日发放限额
+            "reward_limits": {
                 "role": {
                     "daily": 1000,
                     "weekly": 5000,
@@ -283,15 +283,15 @@ class Config:
 
     casino: dict[str, Any] = field(
         default_factory=lambda: {
-            "initial_balance": 5_000_000,  # 赌场初始资金
-            "min_balance": 2_500_000,  # 最低运营资金
-            "max_bet_ratio": 0.01,  # 单笔最大投注占赌场资金比例
-            "house_edge": 0.05,  # 赌场优势
+            "initial_balance": 5_000_000,
+            "min_balance": 2_500_000,
+            "max_bet_ratio": 0.01,
+            "house_edge": 0.05,
             "dynamic_odds": {
                 "enabled": True,
-                "min_multiplier": 0.5,  # 最低赔率倍数
-                "max_multiplier": 2.0,  # 最高赔率倍数
-                "adjustment_rate": 0.01,  # 赔率调整速率
+                "min_multiplier": 0.5,
+                "max_multiplier": 2.0,
+                "adjustment_rate": 0.01,
             },
         }
     )
@@ -308,9 +308,9 @@ class Model:
         self.elo: dict[str, Any] = {}
         self.cfg = Config()
         self.bank_state: dict[str, Any] = {
-            "reserve": self.cfg.central_bank["initial_reserve"],
+            "reserve": self.cfg.fed["initial_reserve"],
             "total_supply": 0,
-            "interest_rate": self.cfg.central_bank["interest_rate"],
+            "interest_rate": self.cfg.fed["interest_rate"],
             "daily_emissions": {
                 "role_rewards": 0,
                 "daily_rewards": 0,
@@ -428,8 +428,8 @@ class Model:
     async def can_emit_points(self, reward_type: str, amount: int) -> bool:
         try:
             bank_state = self.bank_state
-            central_bank = self.cfg.central_bank
-            reward_limits = central_bank["reward_limits"]
+            federal_reserve = self.cfg.fed
+            reward_limits = federal_reserve["reward_limits"]
             daily_emissions = bank_state["daily_emissions"]
             today = datetime.now(timezone.utc).date().isoformat()
             if bank_state["last_reset"] != today:
@@ -437,7 +437,7 @@ class Model:
                 bank_state["last_reset"] = today
 
             return not (
-                bank_state["reserve"] - amount < central_bank["min_reserve"]
+                bank_state["reserve"] - amount < federal_reserve["min_reserve"]
                 or reward_type in reward_limits
                 and daily_emissions.get(f"{reward_type}_rewards", 0) + amount
                 > reward_limits[reward_type]
@@ -453,11 +453,11 @@ class Model:
 
             bank_state = self.bank_state
             casino_state = self.casino_state
-            central_bank = self.cfg.central_bank
-            casino_cfg = self.cfg.casino
+            federal_reserve = self.cfg.fed
+            venetian = self.cfg.casino
 
-            reserve_ratio = bank_state["reserve"] / central_bank["initial_reserve"]
-            market_intervention = central_bank["market_intervention"]
+            reserve_ratio = bank_state["reserve"] / federal_reserve["initial_reserve"]
+            market_intervention = federal_reserve["market_intervention"]
             intervention_rate = market_intervention["intervention_rate"]
 
             bank_state["interest_rate"] *= (
@@ -470,14 +470,14 @@ class Model:
                 )
             )
 
-            if casino_cfg["dynamic_odds"]["enabled"]:
+            if venetian["dynamic_odds"]["enabled"]:
                 total_bets = casino_state["total_bets"] or 1
                 profit_ratio = (
                     casino_state["total_bets"] - casino_state["total_payouts"]
                 ) / total_bets
-                dynamic_odds = casino_cfg["dynamic_odds"]
+                dynamic_odds = venetian["dynamic_odds"]
                 adjustment = dynamic_odds["adjustment_rate"] * (
-                    -1 if profit_ratio < casino_cfg["house_edge"] else 1
+                    -1 if profit_ratio < venetian["house_edge"] else 1
                 )
 
                 casino_state["current_odds"] = min(
