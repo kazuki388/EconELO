@@ -15,14 +15,15 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiofiles
 import aiopath
+import aioshutil
 import interactions
 import orjson
 from interactions.client.errors import NotFound
 from interactions.ext.paginators import Paginator
 
 BASE_DIR: str = os.path.abspath(os.path.dirname(__file__))
-LOG_FILE: str = os.path.join(BASE_DIR, "elo.log")
-ELO_FILE: str = os.path.join(BASE_DIR, "elo.json")
+LOG_FILE: str = os.path.join(BASE_DIR, "econelo.log")
+ELO_FILE: str = os.path.join(BASE_DIR, "econelo.json")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -248,6 +249,53 @@ class Config:
         }
     )
 
+    central_bank: dict[str, Any] = field(
+        default_factory=lambda: {
+            "initial_reserve": 10_000_000,  # 初始储备金
+            "min_reserve": 5_000_000,  # 最低储备要求
+            "interest_rate": 0.05,  # 基准利率
+            "inflation_target": 0.02,  # 通胀目标
+            "reward_allocation": {  # 奖励分配预算
+                "role_rewards": 0.3,  # 30% 用于身份组奖励
+                "daily_rewards": 0.2,  # 20% 用于每日奖励
+                "activity_rewards": 0.2,  # 20% 用于活动奖励
+                "casino_operation": 0.2,  # 20% 用于赌场运营
+                "emergency_reserve": 0.1,  # 10% 用于应急储备
+            },
+            "reward_limits": {  # 各类奖励的每日发放限额
+                "role": {
+                    "daily": 1000,
+                    "weekly": 5000,
+                    "monthly": 25000,
+                    "seasonal": 100000,
+                },
+                "daily_claim": 500,
+                "message": 200,
+                "reaction": 100,
+            },
+            "market_intervention": {
+                "buy_threshold": 0.8,
+                "sell_threshold": 1.2,
+                "intervention_rate": 0.1,
+            },
+        }
+    )
+
+    casino: dict[str, Any] = field(
+        default_factory=lambda: {
+            "initial_balance": 5_000_000,  # 赌场初始资金
+            "min_balance": 2_500_000,  # 最低运营资金
+            "max_bet_ratio": 0.01,  # 单笔最大投注占赌场资金比例
+            "house_edge": 0.05,  # 赌场优势
+            "dynamic_odds": {
+                "enabled": True,
+                "min_multiplier": 0.5,  # 最低赔率倍数
+                "max_multiplier": 2.0,  # 最高赔率倍数
+                "adjustment_rate": 0.01,  # 赔率调整速率
+            },
+        }
+    )
+
     def __getitem__(self, key: str) -> Any:
         try:
             return getattr(self, key)
@@ -259,6 +307,26 @@ class Model:
     def __init__(self) -> None:
         self.elo: dict[str, Any] = {}
         self.cfg = Config()
+        self.bank_state: dict[str, Any] = {
+            "reserve": self.cfg.central_bank["initial_reserve"],
+            "total_supply": 0,
+            "interest_rate": self.cfg.central_bank["interest_rate"],
+            "daily_emissions": {
+                "role_rewards": 0,
+                "daily_rewards": 0,
+                "activity_rewards": 0,
+                "casino_payouts": 0,
+            },
+            "last_reset": datetime.now(timezone.utc).date().isoformat(),
+            "last_update": datetime.now(timezone.utc).isoformat(),
+        }
+        self.casino_state: dict[str, Any] = {
+            "balance": self.cfg.casino["initial_balance"],
+            "total_bets": 0,
+            "total_payouts": 0,
+            "current_odds": 1.0,
+            "last_update": datetime.now(timezone.utc).isoformat(),
+        }
 
     async def load_elo(self) -> None:
         try:
@@ -357,8 +425,126 @@ class Model:
 
         await self.save_elo()
 
+    async def can_emit_points(self, reward_type: str, amount: int) -> bool:
+        try:
+            bank_state = self.bank_state
+            central_bank = self.cfg.central_bank
+            reward_limits = central_bank["reward_limits"]
+            daily_emissions = bank_state["daily_emissions"]
+            today = datetime.now(timezone.utc).date().isoformat()
+            if bank_state["last_reset"] != today:
+                bank_state["daily_emissions"] = {k: 0 for k in daily_emissions}
+                bank_state["last_reset"] = today
 
-class ELO(interactions.Extension):
+            return not (
+                bank_state["reserve"] - amount < central_bank["min_reserve"]
+                or reward_type in reward_limits
+                and daily_emissions.get(f"{reward_type}_rewards", 0) + amount
+                > reward_limits[reward_type]
+            )
+
+        except Exception as e:
+            logger.error(f"Error checking point emission: {e}")
+            return False
+
+    async def update_market_state(self) -> None:
+        try:
+            now = datetime.now(timezone.utc)
+
+            bank_state = self.bank_state
+            casino_state = self.casino_state
+            central_bank = self.cfg.central_bank
+            casino_cfg = self.cfg.casino
+
+            reserve_ratio = bank_state["reserve"] / central_bank["initial_reserve"]
+            market_intervention = central_bank["market_intervention"]
+            intervention_rate = market_intervention["intervention_rate"]
+
+            bank_state["interest_rate"] *= (
+                1 + intervention_rate
+                if reserve_ratio < market_intervention["buy_threshold"]
+                else (
+                    1 - intervention_rate
+                    if reserve_ratio > market_intervention["sell_threshold"]
+                    else 1
+                )
+            )
+
+            if casino_cfg["dynamic_odds"]["enabled"]:
+                total_bets = casino_state["total_bets"] or 1
+                profit_ratio = (
+                    casino_state["total_bets"] - casino_state["total_payouts"]
+                ) / total_bets
+                dynamic_odds = casino_cfg["dynamic_odds"]
+                adjustment = dynamic_odds["adjustment_rate"] * (
+                    -1 if profit_ratio < casino_cfg["house_edge"] else 1
+                )
+
+                casino_state["current_odds"] = min(
+                    dynamic_odds["max_multiplier"],
+                    max(
+                        dynamic_odds["min_multiplier"],
+                        casino_state["current_odds"] * (1 + adjustment),
+                    ),
+                )
+
+            bank_state["last_update"] = now.isoformat()
+            await self.save_elo()
+
+        except Exception as e:
+            logger.error(f"Failed to update market state: {e}", exc_info=True)
+            raise
+
+    async def emit_points(
+        self, user_id: str, amount: int, reward_type: str, reason: str
+    ) -> bool:
+        try:
+            if not await self.can_emit_points(reward_type, amount):
+                return False
+
+            user_data = await self.get_user_elo(user_id)
+            points = user_data.get("points", 0)
+            total_points = user_data.get("total_points", 0)
+            user_data |= {
+                "points": points + amount,
+                "total_points": total_points + amount,
+            }
+
+            bank_state = self.bank_state
+            bank_state["reserve"] -= amount
+            bank_state["total_supply"] += amount
+            bank_state["daily_emissions"][f"{reward_type}_rewards"] += amount
+
+            await self.update_user_elo(user_id, user_data)
+            await self.save_elo()
+            await self.log_points_transaction(user_id, amount, reason, reward_type)
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error emitting points: {e}")
+            return False
+
+    async def log_points_transaction(
+        self, user_id: str, amount: int, reason: str, transaction_type: str
+    ) -> None:
+        logs = self.elo.setdefault("logs", [])
+        logs[max(-999, -len(logs)) :] = [
+            {
+                "user_id": user_id,
+                "amount": amount,
+                "reason": reason,
+                "type": transaction_type,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        await self.save_elo()
+
+
+# Controller
+
+
+class EconElo(interactions.Extension):
     def __init__(self, bot: interactions.Client):
         self.bot = bot
         self.model = Model()
@@ -436,7 +622,7 @@ class ELO(interactions.Extension):
         title: Optional[str] = None,
         description: Optional[str] = None,
         color: Union[EmbedColor, int] = EmbedColor.INFO,
-        fields: Optional[List[Dict[str, str]]] = None,
+        fields: Optional[List[Dict[str, Union[str, bool]]]] = None,
         timestamp: Optional[datetime] = None,
     ) -> interactions.Embed:
         if timestamp is None:
@@ -577,24 +763,208 @@ class ELO(interactions.Extension):
     # Commands
 
     module_base = interactions.SlashCommand(
-        name="elo", description="ELO points management system"
+        name="econelo", description="Economy and ELO points management system"
     )
 
-    module_group_admin = module_base.group(
-        name="debug", description="Administrative commands for managing points"
+    module_group_debug = module_base.group(
+        name="debug",
+        description="Administrative commands for managing the points system",
     )
 
     module_group_claim = module_base.group(
-        name="claim", description="Commands for claiming daily/weekly/monthly points"
+        name="claim", description="Claim your daily, weekly and monthly point rewards"
     )
 
     module_group_view = module_base.group(
-        name="view", description="Commands for viewing points and statistics"
+        name="view", description="View your points balance, history and leaderboards"
     )
+
+    module_group_bank = module_base.group(
+        name="bank",
+        description="Bank operations like transfers, deposits and withdrawals",
+    )
+
+    module_group_casino = module_base.group(
+        name="casino",
+        description="Play games and gamble your points for a chance to win more",
+    )
+
+    # Export command
+
+    @module_group_debug.subcommand(
+        sub_cmd_name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="export",
+            chinese_china="导出",
+            chinese_taiwan="匯出",
+        ),
+        sub_cmd_description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Export files from the extension directory",
+            chinese_china="从扩展目录导出文件",
+            chinese_taiwan="從擴充目錄匯出檔案",
+        ),
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="type",
+            chinese_china="类型",
+            chinese_taiwan="類型",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Type of files to export",
+            chinese_china="要导出的文件类型",
+            chinese_taiwan="要匯出的檔案類型",
+        ),
+        required=True,
+        opt_type=interactions.OptionType.STRING,
+        autocomplete=True,
+        argument_name="file_type",
+    )
+    @interactions.slash_default_member_permission(
+        interactions.Permissions.ADMINISTRATOR
+    )
+    async def debug_export(
+        self, ctx: interactions.SlashContext, file_type: str
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        filename: str = ""
+        locale = ctx.locale or "default"
+
+        if not os.path.exists(BASE_DIR):
+            error_messages = {
+                "default": "Extension directory does not exist.",
+                "chinese_china": "扩展目录不存在。",
+                "chinese_taiwan": "擴充目錄不存在。",
+            }
+            return await self.send_error(
+                ctx, error_messages.get(locale, error_messages["default"])
+            )
+
+        if file_type != "all" and not os.path.isfile(os.path.join(BASE_DIR, file_type)):
+            error_messages = {
+                "default": f"File `{file_type}` does not exist in the extension directory.",
+                "chinese_china": f"文件 `{file_type}` 在扩展目录中不存在。",
+                "chinese_taiwan": f"檔案 `{file_type}` 在擴充目錄中不存在。",
+            }
+            return await self.send_error(
+                ctx, error_messages.get(locale, error_messages["default"])
+            )
+
+        try:
+            async with aiofiles.tempfile.NamedTemporaryFile(
+                prefix="export_", suffix=".tar.gz", delete=False
+            ) as afp:
+                filename = afp.name
+                base_name = filename[:-7]
+
+                await aioshutil.make_archive(
+                    base_name,
+                    "gztar",
+                    BASE_DIR,
+                    "." if file_type == "all" else file_type,
+                )
+
+            if not os.path.exists(filename):
+                error_messages = {
+                    "default": "Failed to create archive file.",
+                    "chinese_china": "创建归档文件失败。",
+                    "chinese_taiwan": "建立壓縮檔案失敗。",
+                }
+                return await self.send_error(
+                    ctx, error_messages.get(locale, error_messages["default"])
+                )
+
+            file_size = os.path.getsize(filename)
+            if file_size > 8_388_608:
+                error_messages = {
+                    "default": "Archive file is too large to send (>8MB).",
+                    "chinese_china": "归档文件太大，无法发送（>8MB）。",
+                    "chinese_taiwan": "壓縮檔案太大，無法發送（>8MB）。",
+                }
+                return await self.send_error(
+                    ctx, error_messages.get(locale, error_messages["default"])
+                )
+
+            success_messages = {
+                "default": (
+                    "All extension files attached."
+                    if file_type == "all"
+                    else f"File `{file_type}` attached."
+                ),
+                "chinese_china": (
+                    "已附加所有扩展文件。"
+                    if file_type == "all"
+                    else f"已附加文件 `{file_type}`。"
+                ),
+                "chinese_taiwan": (
+                    "已附加所有擴充檔案。"
+                    if file_type == "all"
+                    else f"已附加檔案 `{file_type}`。"
+                ),
+            }
+            await ctx.send(
+                success_messages.get(locale, success_messages["default"]),
+                files=[interactions.File(filename)],
+            )
+
+        except PermissionError:
+            logger.error(f"Permission denied while exporting {file_type}")
+            error_messages = {
+                "default": "Permission denied while accessing files.",
+                "chinese_china": "访问文件时权限被拒绝。",
+                "chinese_taiwan": "存取檔案時權限被拒絕。",
+            }
+            await self.send_error(
+                ctx, error_messages.get(locale, error_messages["default"])
+            )
+        except Exception as e:
+            logger.error(f"Error exporting {file_type}: {e}", exc_info=True)
+            error_messages = {
+                "default": f"An error occurred while exporting {file_type}: {str(e)}",
+                "chinese_china": f"导出 {file_type} 时发生错误：{str(e)}",
+                "chinese_taiwan": f"匯出 {file_type} 時發生錯誤：{str(e)}",
+            }
+            await self.send_error(
+                ctx, error_messages.get(locale, error_messages["default"])
+            )
+        finally:
+            if filename and os.path.exists(filename):
+                try:
+                    os.unlink(filename)
+                except Exception as e:
+                    logger.error(f"Error cleaning up temp file: {e}")
+
+    @debug_export.autocomplete("type")
+    async def autocomplete_debug_export_type(
+        self, ctx: interactions.AutocompleteContext
+    ) -> None:
+        choices: list[dict[str, str]] = [{"name": "All Files", "value": "all"}]
+
+        try:
+            if os.path.exists(BASE_DIR):
+                files = [
+                    f
+                    for f in os.listdir(BASE_DIR)
+                    if os.path.isfile(os.path.join(BASE_DIR, f))
+                    and not f.startswith(".")
+                ]
+
+                choices.extend({"name": file, "value": file} for file in sorted(files))
+        except PermissionError:
+            logger.error("Permission denied while listing files")
+            choices = [{"name": "Error: Permission denied", "value": "error"}]
+        except Exception as e:
+            logger.error(f"Error listing files: {e}", exc_info=True)
+            choices = [{"name": f"Error: {str(e)}", "value": "error"}]
+
+        await ctx.send(choices[:25])
 
     # Adjust points for a user or role
 
-    @module_group_admin.subcommand(
+    @module_group_debug.subcommand(
         "adjust", sub_cmd_description="Adjust points for a user or role"
     )
     @interactions.slash_option(
@@ -658,7 +1028,7 @@ class ELO(interactions.Extension):
                 }
 
                 await self.model.update_user_elo(target_id, user_data)
-                await self.log_points_transaction(
+                await self.model.log_points_transaction(
                     target_id,
                     amount,
                     f"Manual adjustment by {ctx.author.username}",
@@ -1078,18 +1448,19 @@ class ELO(interactions.Extension):
 
             if bonuses and points > self.model.cfg.message_reward["base"]["max"]:
                 try:
-                    await event.message.channel.send(
-                        f"<@{user_id}> earned {points} points!\n{chr(10).join(bonuses)}",
-                        delete_after=10,
+                    embed = await self.create_embed(
+                        title="Points Earned!",
+                        description=f"<@{user_id}> earned {points} points!\n{chr(10).join(bonuses)}",
                     )
+                    await event.message.channel.send(embed=embed, delete_after=10)
                 except Exception as e:
-                    logger.error(f"Failed to send points notification: {e!r}")
+                    logger.error(f"Failed to send points notification: {e}")
 
             await update_task
 
     # Add quality bonus points to a message
 
-    @module_group_admin.subcommand(
+    @module_group_debug.subcommand(
         "quality", sub_cmd_description="Add quality bonus points to a message"
     )
     @interactions.slash_option(
@@ -1165,7 +1536,7 @@ class ELO(interactions.Extension):
 
             tasks = [
                 self.model.update_user_elo(user_id, user_elo),
-                self.log_points_transaction(
+                self.model.log_points_transaction(
                     user_id,
                     adjusted_points,
                     f"Quality bonus: {reason}",
@@ -1234,7 +1605,7 @@ class ELO(interactions.Extension):
                     }
                 )
 
-                await self.log_points_transaction(
+                await self.model.log_points_transaction(
                     user_id, points, "Weekly activity reward", "weekly_reward"
                 )
 
@@ -1244,12 +1615,17 @@ class ELO(interactions.Extension):
                             user_id
                         ), await self.bot.fetch_channel(log_channel_id)
                         if all((channel, user)):
-                            await channel.send(
-                                f"Congratulations {user.mention}! You've reached level {level_data['new_level']} "
-                                f"and earned the title: {level_data['title']}"
+                            embed = await self.create_embed(
+                                title="Level Up!",
+                                description=f"Congratulations {user.mention}! You've reached level {level_data['new_level']} and earned the title: {level_data['title']}",
+                                color=0x00FF00,
                             )
+                            await channel.send(embed=embed)
                     except Exception as e:
                         logger.error(f"Failed to send level up notification: {e}")
+                        await self.send_error(
+                            channel, "Failed to send level up notification."
+                        )
 
             await self.model.save_elo()
 
@@ -1310,21 +1686,6 @@ class ELO(interactions.Extension):
             logger.error(f"Error managing level roles: {e}")
 
         return None
-
-    async def log_points_transaction(
-        self, user_id: str, amount: int, reason: str, transaction_type: str
-    ) -> None:
-        logs = self.model.elo.setdefault("logs", [])
-        logs[max(-999, -len(logs)) :] = [
-            {
-                "user_id": user_id,
-                "amount": amount,
-                "reason": reason,
-                "type": transaction_type,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        ]
-        await self.model.save_elo()
 
     # Set reaction reward task
 
@@ -1392,13 +1753,19 @@ class ELO(interactions.Extension):
             }
             await self.model.update_user_elo(target_id, user_elo)
 
-            notification = f"<@{target_id}> received {emoji} from <@{reactor_id}> and earned {points} points!"
             try:
-                await message.channel.send(notification, delete_after=10)
+                embed = await self.create_embed(
+                    title="Reaction Reward",
+                    description=f"<@{target_id}> received {emoji} from <@{reactor_id}> and earned {points} points!",
+                )
+                await message.channel.send(embed=embed, delete_after=10)
             except Exception as e:
                 logger.error(f"Failed to send reaction notification: {e}")
+                await self.send_error(
+                    None, "Failed to send reaction notification", log_to_channel=True
+                )
 
-            await self.log_points_transaction(
+            await self.model.log_points_transaction(
                 target_id, points, f"Reaction reward from {reactor_id}", "reaction"
             )
 
@@ -1442,9 +1809,7 @@ class ELO(interactions.Extension):
     )
     async def claim_daily(self, ctx: interactions.SlashContext) -> None:
         try:
-            author_id = (
-                str(ctx.author.id) if isinstance(ctx.author.id, int) else ctx.author.id
-            )
+            author_id = str(ctx.author.id)
             user_elo = await self.model.get_user_elo(author_id)
             now = datetime.now(timezone.utc)
 
@@ -1457,31 +1822,23 @@ class ELO(interactions.Extension):
                     )
                     return
 
-            if (daily_reward := self.model.cfg.reward_amounts["daily"]) <= 0:
-                await self.send_error(ctx, "Daily rewards are currently disabled.")
+            daily_reward = self.model.cfg.reward_amounts["daily"]
+            if not await self.model.emit_points(
+                author_id, int(daily_reward), "daily", "Daily reward claim"
+            ):
+                await self.send_error(
+                    ctx,
+                    "Daily rewards are currently unavailable. Please try again later.",
+                )
                 return
 
-            points = user_elo.get("points", 0)
-            total_points = user_elo.get("total_points", 0)
-            streaks = user_elo.get("streaks", {})
-
-            user_elo.update(
-                {
-                    "points": points + daily_reward,
-                    "total_points": total_points + daily_reward,
-                    "last_daily": now,
-                    "streaks": {
-                        **streaks,
-                        "daily_login": streaks.get("daily_login", 0) + 1,
-                    },
-                }
-            )
+            user_elo["last_daily"] = now
+            user_elo["streaks"] = {
+                **user_elo.get("streaks", {}),
+                "daily_login": user_elo.get("streaks", {}).get("daily_login", 0) + 1,
+            }
 
             await self.model.update_user_elo(author_id, user_elo)
-            await self.log_points_transaction(
-                author_id, int(daily_reward), "Daily reward claim", "daily_reward"
-            )
-
             await self.send_success(
                 ctx,
                 f"You claimed your daily reward of {daily_reward:,} points!",
@@ -1518,18 +1875,18 @@ class ELO(interactions.Extension):
                 )
                 return
 
-            intervals = {
-                "daily": 86_400,
-                "weekly": 604_800,
-                "monthly": 2_592_000,
-                "seasonal": 7_776_000,
-                "yearly": 31_536_000,
-            }
-
-            user_elo = await self.model.get_user_elo(author_id := str(ctx.author.id))
+            author_id = str(ctx.author.id)
+            user_elo = await self.model.get_user_elo(author_id)
             role_status = user_elo.get("role_status", {})
 
             now = datetime.now(timezone.utc)
+            intervals = {
+                "daily": 86400,
+                "weekly": 604800,
+                "monthly": 2592000,
+                "seasonal": 7776000,
+            }
+
             if last_claim := role_status.get(claim_type):
                 if (delta := (now - last_claim).total_seconds()) < intervals[
                     claim_type
@@ -1540,7 +1897,6 @@ class ELO(interactions.Extension):
                         int(remaining % 86400 // 3600),
                         int(remaining % 3600 // 60),
                     )
-
                     time_str = "".join(
                         f"{v}{u} " for v, u in ((d, "d"), (h, "h"), (m, "m")) if v
                     ).rstrip()
@@ -1550,29 +1906,21 @@ class ELO(interactions.Extension):
                     )
                     return
 
-            if (reward_amount := self.model.cfg.reward_amounts[claim_type]) <= 0:
+            reward_amount = self.model.cfg.reward_amounts[claim_type]
+            if not await self.model.emit_points(
+                author_id,
+                int(reward_amount),
+                "role",
+                f"{claim_type.capitalize()} role reward claim",
+            ):
                 await self.send_error(
-                    ctx, f"Role {claim_type} rewards are currently disabled."
+                    ctx,
+                    f"Role {claim_type} rewards are currently unavailable. Please try again later.",
                 )
                 return
 
-            points = user_elo.get("points", 0)
-            total_points = user_elo.get("total_points", 0)
-            user_elo.update(
-                {
-                    "points": points + reward_amount,
-                    "total_points": total_points + reward_amount,
-                    "role_status": {**role_status, claim_type: now},
-                }
-            )
-
+            user_elo["role_status"] = {**role_status, claim_type: now}
             await self.model.update_user_elo(author_id, user_elo)
-            await self.log_points_transaction(
-                author_id,
-                int(reward_amount),
-                f"{claim_type.capitalize()} role reward claim",
-                f"role_{claim_type}_reward",
-            )
 
             await self.send_success(
                 ctx,
@@ -1681,48 +2029,64 @@ class ELO(interactions.Extension):
             stats = user_data.get("statistics", {})
             skills = user_data.get("skills", {})
 
-            embed = interactions.Embed(
-                title=f"{target_user.username}'s Profile", color=0x00FF00
-            ).add_fields(
-                interactions.EmbedField(
-                    name="Points", value=f"{user_data.get('points', 0):,}", inline=True
-                ),
-                interactions.EmbedField(
-                    name="Total Points",
-                    value=f"{user_data.get('total_points', 0):,}",
-                    inline=True,
-                ),
-                interactions.EmbedField(
-                    name="Level",
-                    value=f"{level} - {level_data.get('title', 'Unknown')}",
-                    inline=True,
-                ),
-                interactions.EmbedField(
-                    name="Messages Sent",
-                    value=str(stats.get("messages_sent", 0)),
-                    inline=True,
-                ),
-                interactions.EmbedField(
-                    name="Quality Contributions",
-                    value=str(stats.get("quality_contributions", 0)),
-                    inline=True,
-                ),
-                interactions.EmbedField(
-                    name="Weekly Activity",
-                    value=str(user_data.get("weekly_activity", 0)),
-                    inline=True,
-                ),
-            )
+            fields = [
+                {
+                    "name": "Points",
+                    "value": str(f"{user_data.get('points', 0):,}"),
+                    "inline": True,
+                },
+                {
+                    "name": "Total Points",
+                    "value": str(f"{user_data.get('total_points', 0):,}"),
+                    "inline": True,
+                },
+                {
+                    "name": "Level",
+                    "value": str(f"{level} - {level_data.get('title', 'Unknown')}"),
+                    "inline": True,
+                },
+                {
+                    "name": "Messages Sent",
+                    "value": str(stats.get("messages_sent", 0)),
+                    "inline": True,
+                },
+                {
+                    "name": "Quality Contributions",
+                    "value": str(stats.get("quality_contributions", 0)),
+                    "inline": True,
+                },
+                {
+                    "name": "Weekly Activity",
+                    "value": str(user_data.get("weekly_activity", 0)),
+                    "inline": True,
+                },
+            ]
 
             if skills:
-                embed.add_field(
-                    name="Skills",
-                    value="\n".join(
-                        f"{skill.title()}: {value}/100"
-                        for skill, value in skills.items()
-                    ),
-                    inline=True,
+                fields.append(
+                    {
+                        "name": "Skills",
+                        "value": str(
+                            "\n".join(
+                                f"{skill.title()}: {value}/100"
+                                for skill, value in skills.items()
+                            )
+                        ),
+                        "inline": True,
+                    }
                 )
+
+            embed = await self.create_embed(
+                title=f"{target_user.username}'s Profile",
+                fields=[
+                    {
+                        "name": str(field["name"]),
+                        "value": str(field["value"]),
+                        "inline": bool(field["inline"]),
+                    }
+                    for field in fields
+                ],
+            )
 
             await ctx.send(embed=embed)
 
@@ -1767,6 +2131,1059 @@ class ELO(interactions.Extension):
 
         except Exception as e:
             logger.error(f"Error in welcome process: {str(e)}")
+
+    # Casino Flip
+
+    @module_group_casino.subcommand(
+        sub_cmd_name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="flip",
+            chinese_china="翻硬币",
+            chinese_taiwan="擲硬幣",
+        ),
+        sub_cmd_description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Bet points on coin flip",
+            chinese_china="押注硬币正反面",
+            chinese_taiwan="押注硬幣正反面",
+        ),
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="bet",
+            chinese_china="押注",
+            chinese_taiwan="押注",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Amount of points to bet",
+            chinese_china="押注的积分数量",
+            chinese_taiwan="押注的積分數量",
+        ),
+        required=True,
+        opt_type=interactions.OptionType.INTEGER,
+        min_value=1,
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="choice",
+            chinese_china="选择",
+            chinese_taiwan="選擇",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Heads or Tails",
+            chinese_china="正面或反面",
+            chinese_taiwan="正面或反面",
+        ),
+        required=True,
+        opt_type=interactions.OptionType.STRING,
+        choices=[
+            interactions.SlashCommandChoice(name="Heads 正面", value="heads"),
+            interactions.SlashCommandChoice(name="Tails 反面", value="tails"),
+        ],
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="multiplier",
+            chinese_china="倍率",
+            chinese_taiwan="倍率",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Betting multiplier (higher risk, higher reward)",
+            chinese_china="投注倍率（风险越高，回报越高）",
+            chinese_taiwan="投注倍率（風險越高，回報越高）",
+        ),
+        required=True,
+        opt_type=interactions.OptionType.STRING,
+        choices=[
+            interactions.SlashCommandChoice(name="1.5x (Safe 稳健)", value="1.5"),
+            interactions.SlashCommandChoice(name="2x (Normal 普通)", value="2"),
+            interactions.SlashCommandChoice(name="3x (Risky 冒险)", value="3"),
+        ],
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="opponent",
+            chinese_china="对手",
+            chinese_taiwan="對手",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Member to play against (default: casino)",
+            chinese_china="要与之对赌的成员（默认：赌场）",
+            chinese_taiwan="要與之對賭的成員（預設：賭場）",
+        ),
+        opt_type=interactions.OptionType.USER,
+    )
+    async def casino_flip(
+        self,
+        ctx: interactions.SlashContext,
+        bet: int,
+        choice: str,
+        multiplier: str,
+        opponent: Optional[interactions.Member] = None,
+    ) -> None:
+        try:
+            user_id, bet_multiplier = str(ctx.author.id), float(multiplier)
+            user_data = await self.model.get_user_elo(user_id)
+            current_points = user_data.get("points", 0)
+
+            if opponent:
+                opponent_id = str(opponent.id)
+                if opponent_id == user_id:
+                    await self.send_error(ctx, "You cannot gamble with yourself!")
+                    return
+
+                opponent_data = await self.model.get_user_elo(opponent_id)
+                opponent_points = opponent_data.get("points", 0)
+                adjusted_bet = int(bet * bet_multiplier)
+
+                if (
+                    insufficient := next(
+                        (
+                            p
+                            for p in (opponent_points, current_points)
+                            if p < adjusted_bet
+                        ),
+                        None,
+                    )
+                ) is not None:
+                    await self.send_error(
+                        ctx,
+                        f"{'Your opponent' if insufficient == opponent_points else 'You'} don't have enough points! Balance: {insufficient:,}",
+                    )
+                    return
+
+                result = ("heads", "tails")[random.getrandbits(1)]
+                won = choice == result
+                points_delta = (2 * won - 1) * int(bet * bet_multiplier)
+
+                new_points = current_points + points_delta
+                opponent_new_points = opponent_points - points_delta
+
+                stats, opponent_stats = (
+                    d.setdefault("statistics", {}) for d in (user_data, opponent_data)
+                )
+                for s, w, pd in (
+                    (stats, won, points_delta),
+                    (opponent_stats, not won, -points_delta),
+                ):
+                    s |= {
+                        k: s.get(k, 0) + v
+                        for k, v in {
+                            "gambles": 1,
+                            "gamble_wins": w,
+                            "points_gambled": bet,
+                            "points_won": pd if w else 0,
+                            "points_lost": bet if not w else 0,
+                        }.items()
+                    }
+
+                user_data["points"], opponent_data["points"] = (
+                    new_points,
+                    opponent_new_points,
+                )
+                update_tasks = [
+                    self.model.update_user_elo(user_id, user_data),
+                    self.model.update_user_elo(opponent_id, opponent_data),
+                    self.model.log_points_transaction(
+                        user_id,
+                        points_delta,
+                        f"P2P coin flip vs {opponent.username}: {'won' if won else 'lost'} {bet} points (x{bet_multiplier})",
+                        "p2p_flip",
+                    ),
+                ]
+
+            else:
+                max_bet = int(
+                    self.model.casino_state["balance"]
+                    * self.model.cfg.casino["max_bet_ratio"]
+                )
+                adjusted_bet = int(bet * bet_multiplier)
+
+                if adjusted_bet > max_bet:
+                    await self.send_error(ctx, f"Maximum bet is {max_bet:,} points!")
+                    return
+                if adjusted_bet > current_points:
+                    await self.send_error(
+                        ctx,
+                        f"You don't have enough points! Current balance: {current_points:,}",
+                    )
+                    return
+
+                result = ("heads", "tails")[random.getrandbits(1)]
+                won = choice == result
+                points_delta = (2 * won - 1) * int(bet * bet_multiplier)
+                new_points = current_points + points_delta
+
+                casino_state = self.model.casino_state
+                casino_state.update(
+                    {
+                        "total_bets": casino_state["total_bets"] + bet,
+                        "balance": casino_state["balance"] - points_delta,
+                        "total_payouts": casino_state["total_payouts"]
+                        + points_delta * won,
+                    }
+                )
+
+                stats = user_data.setdefault("statistics", {})
+                stats |= {
+                    k: stats.get(k, 0) + v
+                    for k, v in {
+                        "gambles": 1,
+                        "gamble_wins": won,
+                        "points_gambled": bet,
+                        "points_won": points_delta if won else 0,
+                        "points_lost": bet if not won else 0,
+                    }.items()
+                }
+                user_data["points"] = new_points
+
+                update_tasks = [
+                    self.model.update_user_elo(user_id, user_data),
+                    self.model.update_market_state(),
+                    self.model.log_points_transaction(
+                        user_id,
+                        points_delta,
+                        f"Casino coin flip: {'won' if won else 'lost'} {bet} points (x{bet_multiplier})",
+                        "casino_flip",
+                    ),
+                ]
+
+            result_emoji, choice_emoji = (
+                "🌝" if x == "heads" else "🌚" for x in (result, choice)
+            )
+            locale = ctx.locale or "english_us"
+
+            result_messages = {
+                True: {
+                    "english_us": f"You won! The coin landed on {result} {result_emoji}! Multiplier: {bet_multiplier}x. You gained `{points_delta:,}` points!",
+                    "chinese_china": f"你赢了！硬币落在{result_emoji}面！倍率：{bet_multiplier}x。你赢得了{points_delta:,}积分！",
+                    "chinese_taiwan": f"你贏了！硬幣落在{result_emoji}面！倍率：{bet_multiplier}x。你贏得了{points_delta:,}積分！",
+                },
+                False: {
+                    "english_us": f"You lost! The coin landed on {result} {result_emoji}! Multiplier: {bet_multiplier}x. You lost `{abs(points_delta):,}` points!",
+                    "chinese_china": f"你输了！硬币落在{result_emoji}面！倍率：{bet_multiplier}x。你失去了`{abs(points_delta):,}`积分！",
+                    "chinese_taiwan": f"你輸了！硬幣落在{result_emoji}面！倍率：{bet_multiplier}x。你失去了`{abs(points_delta):,}`積分！",
+                },
+            }
+
+            description = result_messages[won].get(
+                locale, result_messages[won]["english_us"]
+            )
+            if opponent:
+                description += (
+                    f"\n<@{opponent_id}>'s new balance: `{opponent_new_points:,}`"
+                )
+
+            embed = await self.create_embed(
+                title=f"Coin Flip | {choice_emoji} vs {result_emoji}",
+                description=description,
+                color=EmbedColor.INFO if won else EmbedColor.ERROR,
+            )
+
+            balance_texts = {
+                "english_us": "Current Balance",
+                "chinese_china": "当前余额",
+                "chinese_taiwan": "當前餘額",
+            }
+
+            embed.add_field(
+                name=balance_texts.get(locale, balance_texts["english_us"]),
+                value=f"{new_points:,}",
+                inline=True,
+            )
+
+            await asyncio.gather(*update_tasks)
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in casino flip: {e}")
+            await self.send_error(ctx, "An error occurred while processing your bet.")
+
+    # Casino Dice
+
+    @module_group_casino.subcommand(
+        sub_cmd_name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="dice",
+            chinese_china="骰子",
+            chinese_taiwan="骰子",
+        ),
+        sub_cmd_description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Roll two dice and try to beat your opponent",
+            chinese_china="掷两个骰子并尝试战胜对手",
+            chinese_taiwan="擲兩個骰子並嘗試戰勝對手",
+        ),
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="bet",
+            chinese_china="押注",
+            chinese_taiwan="押注",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Amount of points to bet",
+            chinese_china="押注的积分数量",
+            chinese_taiwan="押注的積分數量",
+        ),
+        required=True,
+        opt_type=interactions.OptionType.INTEGER,
+        min_value=1,
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="opponent",
+            chinese_china="对手",
+            chinese_taiwan="對手",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Member to play against (default: casino)",
+            chinese_china="要与之对赌的成员（默认：赌场）",
+            chinese_taiwan="要與之對賭的成員（預設：賭場）",
+        ),
+        opt_type=interactions.OptionType.USER,
+    )
+    async def casino_dice(
+        self,
+        ctx: interactions.SlashContext,
+        bet: int,
+        opponent: Optional[interactions.Member] = None,
+    ) -> None:
+        try:
+            user_id = str(ctx.author.id)
+            user_data = await self.model.get_user_elo(user_id)
+            current_points = user_data.get("points", 0)
+
+            if opponent:
+                opponent_id = str(opponent.id)
+                if opponent_id == user_id:
+                    await self.send_error(ctx, "You cannot gamble with yourself!")
+                    return
+
+                opponent_data = await self.model.get_user_elo(opponent_id)
+                opponent_points = opponent_data.get("points", 0)
+
+                if (
+                    insufficient := next(
+                        (p for p in (opponent_points, current_points) if p < bet), None
+                    )
+                ) is not None:
+                    await self.send_error(
+                        ctx,
+                        f"{'Your opponent' if opponent_points < bet else 'You'} don't have enough points! Balance: {insufficient:,}",
+                    )
+                    return
+
+                player_dice = tuple(random.randint(1, 6) for _ in range(2))
+                opponent_dice = tuple(random.randint(1, 6) for _ in range(2))
+
+                player_total, opponent_total = sum(player_dice), sum(opponent_dice)
+
+                def get_multiplier(dice):
+                    return 3.0 if dice == (6, 6) else 2.0 if dice[0] == dice[1] else 1.0
+
+                player_multiplier = get_multiplier(player_dice)
+                opponent_multiplier = get_multiplier(opponent_dice)
+
+                player_final = player_total * player_multiplier
+                opponent_final = opponent_total * opponent_multiplier
+
+                won = player_final > opponent_final
+                points_delta = int(
+                    bet * (player_multiplier if won else opponent_multiplier)
+                )
+
+                new_points = current_points + (points_delta if won else -points_delta)
+                opponent_new_points = opponent_points + (
+                    -points_delta if won else points_delta
+                )
+
+                stats_updates = (
+                    (
+                        user_data.setdefault("statistics", {}),
+                        won,
+                        points_delta if won else -points_delta,
+                    ),
+                    (
+                        opponent_data.setdefault("statistics", {}),
+                        not won,
+                        -points_delta if won else points_delta,
+                    ),
+                )
+
+                for stats, win, pd in stats_updates:
+                    stats |= {
+                        k: stats.get(k, 0) + v
+                        for k, v in {
+                            "gambles": 1,
+                            "gamble_wins": win,
+                            "points_gambled": bet,
+                            "points_won": max(pd, 0),
+                            "points_lost": max(-pd, 0),
+                        }.items()
+                    }
+
+                user_data["points"], opponent_data["points"] = (
+                    new_points,
+                    opponent_new_points,
+                )
+
+                update_tasks = [
+                    self.model.update_user_elo(user_id, user_data),
+                    self.model.update_user_elo(opponent_id, opponent_data),
+                    self.model.log_points_transaction(
+                        user_id,
+                        points_delta if won else -points_delta,
+                        f"P2P dice vs {opponent.username}: {'won' if won else 'lost'} {bet} points (x{player_multiplier if won else opponent_multiplier})",
+                        "p2p_dice",
+                    ),
+                ]
+
+                casino_dice = None
+
+            else:
+                max_bet = int(
+                    self.model.casino_state["balance"]
+                    * self.model.cfg.casino["max_bet_ratio"]
+                )
+                if bet > max_bet:
+                    await self.send_error(ctx, f"Maximum bet is {max_bet:,} points!")
+                    return
+
+                if bet > current_points:
+                    await self.send_error(
+                        ctx,
+                        f"You don't have enough points! Current balance: {current_points:,}",
+                    )
+                    return
+
+                player_dice = tuple(random.randint(1, 6) for _ in range(2))
+                casino_dice = tuple(random.randint(1, 6) for _ in range(2))
+
+                player_total, casino_total = sum(player_dice), sum(casino_dice)
+
+                def get_multiplier(dice):
+                    return 3.0 if dice == (6, 6) else 2.0 if dice[0] == dice[1] else 1.0
+
+                player_multiplier = get_multiplier(player_dice)
+                casino_multiplier = get_multiplier(casino_dice)
+
+                player_final = player_total * player_multiplier
+                casino_final = casino_total * casino_multiplier
+
+                won = player_final > casino_final
+                points_delta = int(
+                    bet * (player_multiplier if won else casino_multiplier)
+                )
+                new_points = current_points + (points_delta if won else -points_delta)
+
+                casino_state = self.model.casino_state
+                casino_state.update(
+                    {
+                        "total_bets": casino_state["total_bets"] + bet,
+                        "balance": casino_state["balance"]
+                        - (points_delta if won else -points_delta),
+                        "total_payouts": casino_state["total_payouts"]
+                        + (points_delta if won else 0),
+                    }
+                )
+
+                stats = user_data.setdefault("statistics", {})
+                stats |= {
+                    k: stats.get(k, 0) + v
+                    for k, v in {
+                        "gambles": 1,
+                        "gamble_wins": won,
+                        "points_gambled": bet,
+                        "points_won": points_delta if won else 0,
+                        "points_lost": bet if not won else 0,
+                    }.items()
+                }
+
+                user_data["points"] = new_points
+                update_tasks = [
+                    self.model.update_user_elo(user_id, user_data),
+                    self.model.update_market_state(),
+                    self.model.log_points_transaction(
+                        user_id,
+                        points_delta if won else -points_delta,
+                        f"Casino dice: {'won' if won else 'lost'} {bet} points (x{player_multiplier if won else casino_multiplier})",
+                        "casino_dice",
+                    ),
+                ]
+
+            player_roll = f"🎲 {player_dice[0]} + 🎲 {player_dice[1]} = {player_total}"
+            opponent_roll = f"🎲 {(casino_dice or opponent_dice)[0]} + 🎲 {(casino_dice or opponent_dice)[1]} = {casino_total if casino_dice else opponent_total}"
+
+            result_messages = {
+                True: {
+                    "english_us": f"You won! Your roll: {player_roll} (x{player_multiplier}) > Opponent: {opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier}). You gained `{points_delta:,}` points!",
+                    "chinese_china": f"你赢了！你的骰子：{player_roll} (x{player_multiplier}) > 对手：{opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier})。你赢得了`{points_delta:,}`积分！",
+                    "chinese_taiwan": f"你贏了！你的骰子：{player_roll} (x{player_multiplier}) > 對手：{opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier})。你贏得了`{points_delta:,}`積分！",
+                },
+                False: {
+                    "english_us": f"You lost! Your roll: {player_roll} (x{player_multiplier}) < Opponent: {opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier}). You lost `{points_delta:,}` points!",
+                    "chinese_china": f"你输了！你的骰子：{player_roll} (x{player_multiplier}) < 对手：{opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier})。你失去了`{points_delta:,}`积分！",
+                    "chinese_taiwan": f"你輸了！你的骰子：{player_roll} (x{player_multiplier}) < 對手：{opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier})。你失去了`{points_delta:,}`積分！",
+                },
+            }
+
+            locale = ctx.locale or "english_us"
+            description = result_messages[won].get(
+                locale, result_messages[won]["english_us"]
+            )
+
+            if opponent:
+                description += (
+                    f"\n<@{opponent_id}>'s new balance: `{opponent_new_points:,}`"
+                )
+
+            embed = await self.create_embed(
+                title="🎲 Dice Roll 🎲",
+                description=description,
+                color=EmbedColor.INFO if won else EmbedColor.ERROR,
+            )
+
+            balance_texts = {
+                "english_us": "Current Balance",
+                "chinese_china": "当前余额",
+                "chinese_taiwan": "當前餘額",
+            }
+
+            embed.add_field(
+                name=balance_texts.get(locale, balance_texts["english_us"]),
+                value=f"{new_points:,}",
+                inline=True,
+            )
+
+            await asyncio.gather(*update_tasks)
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in casino dice: {e}")
+            await self.send_error(ctx, "An error occurred while processing your bet.")
+
+    # Casino Guess
+
+    @module_group_casino.subcommand(
+        sub_cmd_name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="guess",
+            chinese_china="猜数字",
+            chinese_taiwan="猜數字",
+        ),
+        sub_cmd_description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Guess a number between 1-100 within 5 rounds",
+            chinese_china="在五回合内猜出1-100之间的数字",
+            chinese_taiwan="在五回合內猜出1-100之間的數字",
+        ),
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="bet",
+            chinese_china="押注",
+            chinese_taiwan="押注",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Amount of points to bet",
+            chinese_china="押注的积分数量",
+            chinese_taiwan="押注的積分數量",
+        ),
+        required=True,
+        opt_type=interactions.OptionType.INTEGER,
+        min_value=1,
+    )
+    async def casino_guess(self, ctx: interactions.SlashContext, bet: int) -> None:
+        try:
+            user_id = str(ctx.author.id)
+            user_data = await self.model.get_user_elo(user_id)
+            current_points = user_data.get("points", 0)
+
+            max_bet = int(
+                self.model.casino_state["balance"]
+                * self.model.cfg.casino["max_bet_ratio"]
+            )
+            if bet > max_bet or bet > current_points:
+                await self.send_error(
+                    ctx,
+                    f"{'Maximum bet is ' + f'{max_bet:,}' if bet > max_bet else 'You do not have enough points! Current balance: ' + f'{current_points:,}'} points!",
+                )
+                return
+
+            target = random.randint(1, 100)
+            rounds_left = 5
+            guessed_numbers = []
+            locale = ctx.locale or "english_us"
+
+            instruction_msgs = dict.fromkeys(
+                ("english_us", "chinese_china", "chinese_taiwan"), ""
+            ).copy()
+
+            def get_multiplier_text(i):
+                multiplier = 10 // (2 ** (i - 1)) if i < 4 else 1 if i == 4 else 0.5
+                return f"{i} round{'s' if i > 1 else ''}: x{multiplier}."
+
+            def get_multiplier_text_cn(i):
+                multiplier = 10 // (2 ** (i - 1)) if i < 4 else 1 if i == 4 else 0.5
+                return f"{i}回合：{multiplier}倍。"
+
+            instruction_msgs.update(
+                {
+                    "english_us": f"Guess a number between 1-100. You have 5 rounds. Fewer rounds = Higher multiplier! {' '.join(get_multiplier_text(i) for i in range(1,6))}",
+                    "chinese_china": f"猜一个1至100之间的数字。你有5回合。用的回合越少=赢得越多！{' '.join(get_multiplier_text_cn(i) for i in range(1,6))}",
+                    "chinese_taiwan": f"猜一個1至100之間的數字。你有5回合。用的回合越少=贏得越多！{' '.join(get_multiplier_text_cn(i) for i in range(1,6))}",
+                }
+            )
+
+            await ctx.send(
+                embed=await self.create_embed(
+                    title="Number Guessing Game",
+                    description=instruction_msgs.get(
+                        locale, instruction_msgs["english_us"]
+                    ),
+                )
+            )
+
+            def check(m):
+                return (
+                    m.author.id == ctx.author.id
+                    and m.channel_id == ctx.channel_id
+                    and m.content.isdigit()
+                    and 1 <= int(m.content) <= 100
+                )
+
+            while rounds_left:
+                try:
+                    message = await self.bot.wait_for(
+                        "message_create", checks=check, timeout=30.0
+                    )
+                    guess = int(message.content)
+                    guessed_numbers.append(guess)
+                    rounds_left -= 1
+
+                    if guess == target:
+                        multiplier = {1: 10.0, 2: 5.0, 3: 2.0, 4: 1.0, 5: 0.5}[
+                            5 - rounds_left
+                        ]
+                        points_won = int(bet * multiplier)
+                        new_points = current_points + points_won
+
+                        casino_state = self.model.casino_state
+                        casino_state |= {
+                            "total_bets": casino_state["total_bets"] + bet,
+                            "balance": casino_state["balance"] - points_won,
+                            "total_payouts": casino_state["total_payouts"] + points_won,
+                        }
+
+                        user_data.setdefault("statistics", {}).update(
+                            {
+                                k: user_data["statistics"].get(k, 0) + v
+                                for k, v in {
+                                    "gambles": 1,
+                                    "gamble_wins": 1,
+                                    "points_gambled": bet,
+                                    "points_won": points_won,
+                                }.items()
+                            }
+                        )
+                        user_data["points"] = new_points
+
+                        await self.model.update_user_elo(user_id, user_data)
+                        await self.model.update_market_state()
+                        await self.model.log_points_transaction(
+                            user_id,
+                            points_won,
+                            f"Number guessing game: won {points_won} points (x{multiplier})",
+                            "casino_guess",
+                        )
+
+                        win_msgs = {
+                            "english_us": f"Congratulations! You guessed the number in {5 - rounds_left} rounds! Target was: {target}. Multiplier: x{multiplier}. You won: {points_won:,} points!",
+                            "chinese_china": f"恭喜！你用了{5 - rounds_left}回合猜中了数字！目标数字是：{target}。倍率：{multiplier}倍。你赢得了：{points_won:,}积分！",
+                            "chinese_taiwan": f"恭喜！你用了{5 - rounds_left}回合猜中了數字！目標數字是：{target}。倍率：{multiplier}倍。你贏得了：{points_won:,}積分！",
+                        }
+
+                        await ctx.channel.send(
+                            embed=await self.create_embed(
+                                title="Number Guessing Game",
+                                description=win_msgs.get(
+                                    locale, win_msgs["english_us"]
+                                ),
+                            )
+                        )
+                        return
+
+                    if rounds_left:
+                        hint_msgs = {
+                            "english_us": f"{'Higher' if guess < target else 'Lower'}! Rounds left: {rounds_left}. Guessed numbers: {', '.join(map(str, guessed_numbers))}.",
+                            "chinese_china": f"{'大一点' if guess < target else '小一点'}！剩余回合：{rounds_left}。已猜数字：{', '.join(map(str, guessed_numbers))}。",
+                            "chinese_taiwan": f"{'大一點' if guess < target else '小一點'}！剩餘回合：{rounds_left}。已猜數字：{', '.join(map(str, guessed_numbers))}。",
+                        }
+                        await ctx.channel.send(
+                            embed=await self.create_embed(
+                                title="Number Guessing Game",
+                                description=hint_msgs.get(
+                                    locale, hint_msgs["english_us"]
+                                ),
+                            )
+                        )
+
+                except asyncio.TimeoutError:
+                    await self.send_error(
+                        ctx,
+                        {
+                            "english_us": "Time's up! Game over.",
+                            "chinese_china": "时间到！游戏结束。",
+                            "chinese_taiwan": "時間到！遊戲結束。",
+                        }.get(locale, "Time's up! Game over."),
+                    )
+                    return
+
+            new_points = current_points - bet
+            casino_state = self.model.casino_state
+            casino_state |= {
+                "total_bets": casino_state["total_bets"] + bet,
+                "balance": casino_state["balance"] + bet,
+            }
+
+            user_data.setdefault("statistics", {}).update(
+                {
+                    k: user_data["statistics"].get(k, 0) + v
+                    for k, v in {
+                        "gambles": 1,
+                        "points_gambled": bet,
+                        "points_lost": bet,
+                    }.items()
+                }
+            )
+            user_data["points"] = new_points
+
+            await self.model.update_user_elo(user_id, user_data)
+            await self.model.update_market_state()
+            await self.model.log_points_transaction(
+                user_id, -bet, "Number guessing game: lost", "casino_guess"
+            )
+
+            lose_msgs = {
+                "english_us": f"Game Over! The number was {target}. You lost {bet:,} points! Your guesses: {', '.join(map(str, guessed_numbers))}.",
+                "chinese_china": f"游戏结束！目标数字是{target}。你失去了{bet:,}积分！你猜的数字：{', '.join(map(str, guessed_numbers))}。",
+                "chinese_taiwan": f"遊戲結束！目標數字是{target}。你失去了{bet:,}積分！你猜的數字：{', '.join(map(str, guessed_numbers))}。",
+            }
+
+            await ctx.channel.send(
+                embed=await self.create_embed(
+                    title="Number Guessing Game",
+                    description=lose_msgs.get(locale, lose_msgs["english_us"]),
+                    color=EmbedColor.ERROR,
+                )
+            )
+
+        except Exception as e:
+            logger.error(f"Error in casino guess: {e}")
+            await self.send_error(ctx, "An error occurred while processing your game.")
+
+    # Casino RPS
+
+    @module_group_casino.subcommand(
+        sub_cmd_name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="rps",
+            chinese_china="猜拳",
+            chinese_taiwan="猜拳",
+        ),
+        sub_cmd_description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Play Rock Paper Scissors to win your bet",
+            chinese_china="玩剪刀石头布来赢取赌注",
+            chinese_taiwan="玩剪刀石頭布來贏取賭注",
+        ),
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="bet",
+            chinese_china="押注",
+            chinese_taiwan="押注",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Amount of points to bet",
+            chinese_china="押注的积分数量",
+            chinese_taiwan="押注的積分數量",
+        ),
+        required=True,
+        opt_type=interactions.OptionType.INTEGER,
+        min_value=1,
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="choice",
+            chinese_china="选择",
+            chinese_taiwan="選擇",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Rock, Paper, or Scissors",
+            chinese_china="石头、布或剪刀",
+            chinese_taiwan="石頭、布或剪刀",
+        ),
+        required=True,
+        opt_type=interactions.OptionType.STRING,
+        choices=[
+            interactions.SlashCommandChoice(name="✊ Rock 石頭", value="rock"),
+            interactions.SlashCommandChoice(name="✋ Paper 布", value="paper"),
+            interactions.SlashCommandChoice(name="✌️ Scissors 剪刀", value="scissors"),
+        ],
+    )
+    @interactions.slash_option(
+        name=interactions.LocalisedName(
+            default_locale="english_us",
+            english_us="opponent",
+            chinese_china="对手",
+            chinese_taiwan="對手",
+        ),
+        description=interactions.LocalisedDesc(
+            default_locale="english_us",
+            english_us="Member to play against (default: casino)",
+            chinese_china="要与之对赌的成员（默认：赌场）",
+            chinese_taiwan="要與之對賭的成員（預設：賭場）",
+        ),
+        opt_type=interactions.OptionType.USER,
+    )
+    async def casino_rps(
+        self,
+        ctx: interactions.SlashContext,
+        bet: int,
+        choice: str,
+        opponent: Optional[interactions.Member] = None,
+    ) -> None:
+        try:
+            user_id = str(ctx.author.id)
+            user_data = await self.model.get_user_elo(user_id)
+            current_points = user_data.get("points", 0)
+
+            choices = {
+                "rock": ("scissors", "✊"),
+                "paper": ("rock", "✋"),
+                "scissors": ("paper", "✌️"),
+            }
+
+            if opponent:
+                opponent_id = str(opponent.id)
+                if opponent_id == user_id:
+                    await self.send_error(ctx, "You cannot play against yourself!")
+                    return
+
+                opponent_data = await self.model.get_user_elo(opponent_id)
+                opponent_points = opponent_data.get("points", 0)
+
+                if any(bet > points for points in (current_points, opponent_points)):
+                    await self.send_error(
+                        ctx,
+                        f"{'You' if bet > current_points else 'Your opponent'} don't have enough points! Balance: {min(current_points, opponent_points):,}",
+                    )
+                    return
+
+                buttons = [
+                    interactions.Button(
+                        style=interactions.ButtonStyle.PRIMARY,
+                        label=f"{emoji} {name.title()}",
+                        custom_id=f"rps_{name}",
+                    )
+                    for name, (_, emoji) in choices.items()
+                ]
+
+                locale = ctx.locale or "english_us"
+                challenge_msgs = {
+                    "english_us": f"{opponent.mention}, {ctx.author.mention} challenges you to Rock Paper Scissors! Bet: {bet:,} points.",
+                    "chinese_china": f"{opponent.mention}，{ctx.author.mention} 向你发起剪刀石头布挑战！赌注：{bet:,} 积分。",
+                    "chinese_taiwan": f"{opponent.mention}，{ctx.author.mention} 向你發起剪刀石頭布挑戰！賭注：{bet:,} 積分。",
+                }
+
+                action_row = interactions.ActionRow(*buttons)
+                await ctx.send(
+                    embed=await self.create_embed(
+                        title="Rock Paper Scissors Challenge",
+                        description=challenge_msgs.get(
+                            locale, challenge_msgs["english_us"]
+                        ),
+                    ),
+                    components=[action_row],
+                )
+
+                try:
+                    component_ctx = await self.bot.wait_for_component(
+                        components=action_row,
+                        check=lambda c: str(c.author.id) == opponent_id,
+                        timeout=30.0,
+                    )
+                    opponent_choice = component_ctx.ctx.custom_id.split("_")[1]
+                except asyncio.TimeoutError:
+                    await self.send_error(
+                        ctx,
+                        {
+                            "english_us": "Challenge timed out!",
+                            "chinese_china": "挑战超时！",
+                            "chinese_taiwan": "挑戰超時！",
+                        }.get(locale, "Challenge timed out!"),
+                    )
+                    return
+
+            else:
+                max_bet = int(
+                    self.model.casino_state["balance"]
+                    * self.model.cfg.casino["max_bet_ratio"]
+                )
+                if bet > max_bet:
+                    await self.send_error(ctx, f"Maximum bet is {max_bet:,} points!")
+                    return
+                if bet > current_points:
+                    await self.send_error(
+                        ctx,
+                        f"You don't have enough points! Current balance: {current_points:,}",
+                    )
+                    return
+
+                opponent_choice = random.choice(tuple(choices))
+                casino_state = self.model.casino_state
+
+            points_delta = (
+                lambda x, y: 0 if x == y else bet if y == choices[x][0] else -bet
+            )(choice, opponent_choice)
+            new_points = current_points + points_delta
+
+            if opponent:
+                opponent_new_points = opponent_points - points_delta
+                if points_delta:
+                    for data, won, pd in (
+                        (user_data, points_delta > 0, points_delta),
+                        (opponent_data, points_delta < 0, -points_delta),
+                    ):
+                        data.setdefault("statistics", {}).update(
+                            {
+                                k: data["statistics"].get(k, 0) + v
+                                for k, v in {
+                                    "gambles": 1,
+                                    "gamble_wins": won,
+                                    "points_gambled": bet,
+                                    "points_won": max(pd, 0),
+                                    "points_lost": max(-pd, 0),
+                                }.items()
+                            }
+                        )
+                user_data["points"], opponent_data["points"] = (
+                    new_points,
+                    opponent_new_points,
+                )
+                update_tasks = [
+                    self.model.update_user_elo(user_id, user_data),
+                    self.model.update_user_elo(opponent_id, opponent_data),
+                ]
+            else:
+                if points_delta:
+                    casino_state.update(
+                        {
+                            "total_bets": casino_state["total_bets"] + bet,
+                            "balance": casino_state["balance"] - points_delta,
+                            "total_payouts": casino_state["total_payouts"]
+                            + (points_delta if points_delta > 0 else 0),
+                        }
+                    )
+                    user_data.setdefault("statistics", {}).update(
+                        {
+                            k: user_data["statistics"].get(k, 0) + v
+                            for k, v in {
+                                "gambles": 1,
+                                "gamble_wins": points_delta > 0,
+                                "points_gambled": bet,
+                                "points_won": max(points_delta, 0),
+                                "points_lost": max(-points_delta, 0),
+                            }.items()
+                        }
+                    )
+                user_data["points"] = new_points
+                update_tasks = [
+                    self.model.update_user_elo(user_id, user_data),
+                    self.model.update_market_state(),
+                ]
+
+            if points_delta:
+                update_tasks.append(
+                    self.model.log_points_transaction(
+                        user_id,
+                        points_delta,
+                        f"{'P2P' if opponent else 'Casino'} RPS: {'won' if points_delta > 0 else 'lost'} {bet} points",
+                        f"{'p2p' if opponent else 'casino'}_rps",
+                    )
+                )
+
+            result_msgs = {
+                0: {
+                    "english_us": f"It's a tie! Both chose {choices[choice][1]}",
+                    "chinese_china": f"平局！双方都选择了 {choices[choice][1]}",
+                    "chinese_taiwan": f"平手！雙方都選擇了 {choices[choice][1]}",
+                },
+                bet: {
+                    "english_us": f"You won! {choices[choice][1]} beats {choices[opponent_choice][1]}! You gained {points_delta:,} points!",
+                    "chinese_china": f"你赢了！{choices[choice][1]} 胜过 {choices[opponent_choice][1]}！你赢得了 {points_delta:,} 积分！",
+                    "chinese_taiwan": f"你贏了！{choices[choice][1]} 勝過 {choices[opponent_choice][1]}！你贏得了 {points_delta:,} 積分！",
+                },
+                -bet: {
+                    "english_us": f"You lost! {choices[opponent_choice][1]} beats {choices[choice][1]}! You lost {abs(points_delta):,} points!",
+                    "chinese_china": f"你输了！{choices[opponent_choice][1]} 胜过 {choices[choice][1]}！你失去了 {abs(points_delta):,} 积分！",
+                    "chinese_taiwan": f"你輸了！{choices[opponent_choice][1]} 勝過 {choices[choice][1]}！你失去了 {abs(points_delta):,} 積分！",
+                },
+            }
+
+            description = result_msgs[points_delta].get(
+                ctx.locale or "english_us", result_msgs[points_delta]["english_us"]
+            )
+            if opponent:
+                description += (
+                    f"\n{opponent.mention}'s new balance: {opponent_new_points:,}"
+                )
+
+            embed = await self.create_embed(
+                title="Rock Paper Scissors Results",
+                description=description,
+                color=EmbedColor.INFO if points_delta >= 0 else EmbedColor.ERROR,
+            )
+            embed.add_field(
+                name={
+                    "english_us": "Current Balance",
+                    "chinese_china": "当前余额",
+                    "chinese_taiwan": "當前餘額",
+                }.get(ctx.locale or "english_us", "Current Balance"),
+                value=f"{new_points:,}",
+                inline=True,
+            )
+
+            for task in update_tasks:
+                await task
+            if opponent:
+                await component_ctx.ctx.message.edit(embed=embed, components=[])
+            else:
+                await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in casino RPS: {e}")
+            await self.send_error(ctx, "An error occurred while processing your game.")
 
     # Tasks
 
