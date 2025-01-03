@@ -3287,7 +3287,7 @@ class EconELO(interactions.Extension):
                     "inline": True,
                 },
                 {
-                    "name": "🔢 Number Guess (`/econelo casino guess`)",
+                    "name": "Number Guess (`/econelo casino guess`)",
                     "value": "- Guess number between 1-100\n"
                     "- 5 rounds to win\n"
                     "- Earlier wins = higher multiplier\n"
