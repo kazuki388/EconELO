@@ -183,7 +183,7 @@ class Config:
             "points": 5,
             "daily_limit": 50,
             "emoji": "⭐",
-            "special_emojis": {"🏆": 10, "💎": 8, "🌟": 7},
+            "special_emojis": {"👍": 10, "💎": 8, "🌟": 7},
         }
     )
 
@@ -225,10 +225,14 @@ class Config:
 
     levels: dict[str, dict[str, int | str]] = field(
         default_factory=lambda: {
-            "1": {"points": 66666, "title": "赌神", "role_id": 1292379114476671048},
-            "2": {"points": 88888, "title": "赌神", "role_id": 1292379114476671048},
+            "1": {
+                "points": 666666,
+                "title": "初出茅庐",
+                "role_id": 1292379114476671048,
+            },
+            "2": {"points": 888888, "title": "赌神", "role_id": 1292379114476671048},
             "3": {
-                "points": 99999,
+                "points": 999999,
                 "title": "大舞台传奇",
                 "role_id": 1312024848385703937,
             },
@@ -323,6 +327,10 @@ class Config:
             "inflation_target": 0.02,
             "max_bet_ratio": 0.01,
             "house_edge": 0.05,
+            "max_debt": -100000,
+            "debt_interest_rate": 0.05,
+            "debt_interest_interval": 86400,
+            "debt_collection_fee": 0.10,
             "dynamic_odds": {
                 "enabled": True,
                 "min_multiplier": 0.5,
@@ -651,6 +659,47 @@ class Model:
             logger.error(f"Error calculating tax: {e}", exc_info=True)
             return amount, 0
 
+    async def apply_casino_tax(
+        self,
+        amount: int,
+        won: bool,
+    ) -> tuple[int, int]:
+        try:
+            final_amount, tax_amount = await self.calculate_tax(abs(amount), "casino")
+            actual_amount = (1 if won else -1) * final_amount
+
+            self.fed_state.update(
+                {
+                    "tax_collected": self.fed_state.get("tax_collected", 0)
+                    + tax_amount,
+                    "reserve": self.fed_state["reserve"] + tax_amount,
+                }
+            )
+
+            return actual_amount, tax_amount
+
+        except Exception as e:
+            logger.error(f"Error applying casino tax: {e}", exc_info=True)
+            return (-1 if not won else 1) * amount, 0
+
+    async def check_debt_limit(self, user_id: str, potential_debt: int) -> bool:
+        return min(
+            0, (await self.get_user_elo(user_id)).get("points", 0)
+        ) + potential_debt >= self.cfg.fed.get("max_debt", -100_000)
+
+    async def apply_debt_interest(self, user_id: str) -> None:
+        user_data = await self.get_user_elo(user_id)
+        if (points := user_data.get("points", 0)) >= 0:
+            return
+
+        interest = int(abs(points) * self.cfg.fed["interest_rate"])
+        user_data["points"] = points - interest
+
+        await self.update_user_elo(user_id, user_data)
+        await self.log_points_transaction(
+            user_id, -interest, "Debt interest charge", "debt_interest"
+        )
+
     async def log_points_transaction(
         self, user_id: str, amount: int, reason: str, transaction_type: str
     ) -> None:
@@ -943,7 +992,7 @@ class EconELO(interactions.Extension):
 
             await self.send_success(
                 ctx,
-                f"Successfully minted `{amount:,}` points for the casino. Previous balance: `{previous_balance:,}`. New balance: `{fed_state['balance']:,}`.",
+                f"Minted `{amount:,}` points for the casino. Previous balance: `{previous_balance:,}`. New balance: `{fed_state['balance']:,}`.",
                 log_to_channel=True,
             )
 
@@ -1172,8 +1221,7 @@ class EconELO(interactions.Extension):
 
             await self.send_success(
                 ctx,
-                f"{'Added' if amount > 0 else 'Removed'} {abs(amount)} points {'to' if amount > 0 else 'from'} "
-                f"{target_mention}'s balance. New balance: {new_balance}.",
+                f"{'Added' if amount > 0 else 'Removed'} {abs(amount)} points {'to' if amount > 0 else 'from'} {target_mention}'s balance. New balance: {new_balance}.",
                 log_to_channel=True,
             )
 
@@ -1268,7 +1316,7 @@ class EconELO(interactions.Extension):
                 ),
                 self.send_success(
                     ctx,
-                    f"Awarded {adjusted_points} quality bonus points to {message.author.mention} for: {reason}",
+                    f"Awarded {adjusted_points} quality bonus points to {message.author.mention} for: {reason}.",
                     log_to_channel=True,
                 ),
                 message.add_reaction(self.model.cfg.reaction_reward["emoji"]),
@@ -1328,7 +1376,6 @@ class EconELO(interactions.Extension):
                 int(daily_reward),
                 "daily",
                 "Daily reward claim",
-                apply_tax=True,
                 tax_type="claim",
             ):
                 await self.send_error(
@@ -1346,8 +1393,7 @@ class EconELO(interactions.Extension):
             await self.model.update_user_elo(author_id, user_elo)
             await self.send_success(
                 ctx,
-                f"You claimed your daily reward of {daily_reward:,} points!",
-                log_to_channel=True,
+                f"You claimed your daily reward of {daily_reward:,} points.",
             )
 
         except Exception as e:
@@ -1418,7 +1464,6 @@ class EconELO(interactions.Extension):
                 int(reward_amount),
                 "role",
                 f"{claim_type.capitalize()} {role_name} role reward claim",
-                apply_tax=True,
                 tax_type="claim",
             ):
                 await self.send_error(
@@ -1432,8 +1477,7 @@ class EconELO(interactions.Extension):
 
             await self.send_success(
                 ctx,
-                f"You claimed your {claim_type} `{role_name}` reward of `{reward_amount:,}` points!",
-                log_to_channel=True,
+                f"You claimed your {claim_type} `{role_name}` reward of `{reward_amount:,}` points.",
             )
 
         except Exception as e:
@@ -1574,11 +1618,9 @@ class EconELO(interactions.Extension):
                 fields.append(
                     {
                         "name": "Skills",
-                        "value": str(
-                            "- ".join(
-                                f"{skill.title()}: `{value}/100`\n"
-                                for skill, value in skills.items()
-                            )
+                        "value": "\n".join(
+                            f"- {skill.title()}: `{value}/100`"
+                            for skill, value in skills.items()
                         ),
                         "inline": True,
                     }
@@ -1682,26 +1724,34 @@ class EconELO(interactions.Extension):
 
                 result = ("heads", "tails")[random.getrandbits(1)]
                 won = choice == result
-                points_delta = (2 * won - 1) * int(bet * bet_multiplier)
+                base_points = int(bet * float(multiplier))
+                points_delta, tax_amount = await self.model.apply_casino_tax(
+                    base_points, won
+                )
 
                 new_points = current_points + points_delta
                 opponent_new_points = opponent_points - points_delta
 
-                stats, opponent_stats = (
-                    d.setdefault("statistics", {}) for d in (user_data, opponent_data)
+                stats_updates = (
+                    (user_data.setdefault("statistics", {}), won, points_delta),
+                    (
+                        opponent_data.setdefault("statistics", {}),
+                        not won,
+                        -points_delta,
+                    ),
                 )
-                for s, w, pd in (
-                    (stats, won, points_delta),
-                    (opponent_stats, not won, -points_delta),
-                ):
-                    s |= {
-                        k: s.get(k, 0) + v
+
+                for stats, win, pd in stats_updates:
+                    stats |= {
+                        k: stats.get(k, 0) + v
                         for k, v in {
                             "gambles": 1,
-                            "gamble_wins": w,
+                            "gamble_wins": win,
                             "points_gambled": bet,
-                            "points_won": pd if w else 0,
-                            "points_lost": bet if not w else 0,
+                            "points_won": max(pd, 0),
+                            "points_lost": abs(min(pd, 0)),
+                            "tax_paid": tax_amount,
+                            "debt": min(0, new_points),
                         }.items()
                     }
 
@@ -1739,7 +1789,10 @@ class EconELO(interactions.Extension):
 
                 result = ("heads", "tails")[random.getrandbits(1)]
                 won = choice == result
-                points_delta = (2 * won - 1) * int(bet * bet_multiplier)
+                base_points = int(bet * float(multiplier))
+                points_delta, tax_amount = await self.model.apply_casino_tax(
+                    base_points, won
+                )
                 new_points = current_points + points_delta
 
                 fed_state = self.model.fed_state
@@ -1748,7 +1801,9 @@ class EconELO(interactions.Extension):
                         "total_bets": fed_state["total_bets"] + bet,
                         "balance": fed_state["balance"] - points_delta,
                         "total_payouts": fed_state["total_payouts"]
-                        + points_delta * won,
+                        + (points_delta if won else 0),
+                        "total_debt": fed_state.get("total_debt", 0)
+                        + min(0, new_points),
                     }
                 )
 
@@ -1759,8 +1814,10 @@ class EconELO(interactions.Extension):
                         "gambles": 1,
                         "gamble_wins": won,
                         "points_gambled": bet,
-                        "points_won": points_delta if won else 0,
-                        "points_lost": bet if not won else 0,
+                        "points_won": max(points_delta, 0),
+                        "points_lost": abs(min(points_delta, 0)),
+                        "tax_paid": tax_amount,
+                        "debt": min(0, new_points),
                     }.items()
                 }
                 user_data["points"] = new_points
@@ -1780,12 +1837,15 @@ class EconELO(interactions.Extension):
                 "🌝" if x == "heads" else "🌚" for x in (result, choice)
             )
 
-            description = f"You {'won' if won else 'lost'}! The coin landed on {result} {result_emoji}! Multiplier: {bet_multiplier}x. You {'gained' if won else 'lost'} `{abs(points_delta):,}` points!"
+            tax_text = f" (Tax: {tax_amount:,})" if tax_amount else ""
+            debt_text = (
+                f" [DEBT: {abs(min(new_points, 0)):,}]" if new_points < 0 else ""
+            )
+
+            description = f"You {'won' if won else 'lost'}! The coin landed on {result} {result_emoji}! Multiplier: {multiplier}x. Points: {abs(points_delta):,}{tax_text}{debt_text}"
 
             if opponent:
-                description += (
-                    f" <@{opponent_id}>'s new balance: `{opponent_new_points:,}`"
-                )
+                description += f"\nFed's balance: {opponent_new_points:,}"
 
             embed = await self.create_embed(
                 title=f"Coin Flip | {choice_emoji} vs {result_emoji}",
@@ -1870,25 +1930,26 @@ class EconELO(interactions.Extension):
                 opponent_final = opponent_total * opponent_multiplier
 
                 won = player_final > opponent_final
-                points_delta = int(
+                base_points = int(
                     bet * (player_multiplier if won else opponent_multiplier)
                 )
-
-                new_points = current_points + (points_delta if won else -points_delta)
-                opponent_new_points = opponent_points + (
-                    -points_delta if won else points_delta
+                points_delta, tax_amount = await self.model.apply_casino_tax(
+                    base_points, won
                 )
+
+                new_points = current_points + points_delta
+                opponent_new_points = opponent_points - points_delta
 
                 stats_updates = (
                     (
                         user_data.setdefault("statistics", {}),
                         won,
-                        points_delta if won else -points_delta,
+                        points_delta,
                     ),
                     (
                         opponent_data.setdefault("statistics", {}),
                         not won,
-                        -points_delta if won else points_delta,
+                        -points_delta,
                     ),
                 )
 
@@ -1901,6 +1962,8 @@ class EconELO(interactions.Extension):
                             "points_gambled": bet,
                             "points_won": max(pd, 0),
                             "points_lost": max(-pd, 0),
+                            "tax_paid": tax_amount,
+                            "debt": min(0, new_points),
                         }.items()
                     }
 
@@ -1914,7 +1977,7 @@ class EconELO(interactions.Extension):
                     self.model.update_user_elo(opponent_id, opponent_data),
                     self.model.log_points_transaction(
                         user_id,
-                        points_delta if won else -points_delta,
+                        points_delta,
                         f"P2P dice vs {opponent.username}: {'won' if won else 'lost'} {bet} points (x{player_multiplier if won else opponent_multiplier})",
                         "p2p_dice",
                     ),
@@ -1953,17 +2016,20 @@ class EconELO(interactions.Extension):
                 casino_final = casino_total * casino_multiplier
 
                 won = player_final > casino_final
-                points_delta = int(
+                base_points = int(
                     bet * (player_multiplier if won else casino_multiplier)
                 )
-                new_points = current_points + (points_delta if won else -points_delta)
+                points_delta, tax_amount = await self.model.apply_casino_tax(
+                    base_points, won
+                )
+
+                new_points = current_points + points_delta
 
                 fed_state = self.model.fed_state
                 fed_state.update(
                     {
                         "total_bets": fed_state["total_bets"] + bet,
-                        "balance": fed_state["balance"]
-                        - (points_delta if won else -points_delta),
+                        "balance": fed_state["balance"] - points_delta,
                         "total_payouts": fed_state["total_payouts"]
                         + (points_delta if won else 0),
                     }
@@ -1976,8 +2042,10 @@ class EconELO(interactions.Extension):
                         "gambles": 1,
                         "gamble_wins": won,
                         "points_gambled": bet,
-                        "points_won": points_delta if won else 0,
-                        "points_lost": bet if not won else 0,
+                        "points_won": max(points_delta, 0),
+                        "points_lost": abs(min(points_delta, 0)),
+                        "tax_paid": tax_amount,
+                        "debt": min(0, new_points),
                     }.items()
                 }
 
@@ -1987,7 +2055,7 @@ class EconELO(interactions.Extension):
                     self.model.update_market_state(),
                     self.model.log_points_transaction(
                         user_id,
-                        points_delta if won else -points_delta,
+                        points_delta,
                         f"Casino dice: {'won' if won else 'lost'} {bet} points (x{player_multiplier if won else casino_multiplier})",
                         "casino_dice",
                     ),
@@ -1996,12 +2064,15 @@ class EconELO(interactions.Extension):
             player_roll = f"🎲 {player_dice[0]} + 🎲 {player_dice[1]} = {player_total}"
             opponent_roll = f"🎲 {(casino_dice or opponent_dice)[0]} + 🎲 {(casino_dice or opponent_dice)[1]} = {casino_total if casino_dice else opponent_total}"
 
-            description = f"You {'won' if won else 'lost'}! Your roll: {player_roll} (x{player_multiplier}) {'>' if won else '<'} Opponent: {opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier}). You {'gained' if won else 'lost'} `{points_delta:,}` points!"
+            tax_text = f" (Tax: {tax_amount:,})" if tax_amount else ""
+            debt_text = (
+                f" [DEBT: {abs(min(new_points, 0)):,}]" if new_points < 0 else ""
+            )
+
+            description = f"You {'won' if won else 'lost'}! Your roll: {player_roll} (x{player_multiplier}) {'>' if won else '<'} Opponent: {opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier}). You {'gained' if won else 'lost'} `{abs(points_delta):,}` points{tax_text}{debt_text}!"
 
             if opponent:
-                description += (
-                    f" <@{opponent_id}>'s new balance: `{opponent_new_points:,}`"
-                )
+                description += f" Fed's new balance: `{opponent_new_points:,}`"
 
             embed = await self.create_embed(
                 title="🎲 Dice Roll 🎲",
@@ -2089,14 +2160,17 @@ class EconELO(interactions.Extension):
                         multiplier = {1: 10.0, 2: 5.0, 3: 2.0, 4: 1.0, 5: 0.5}[
                             5 - rounds_left
                         ]
-                        points_won = int(bet * multiplier)
-                        new_points = current_points + points_won
+                        base_points = int(bet * multiplier)
+                        points_delta, tax_amount = await self.model.apply_casino_tax(
+                            base_points, True
+                        )
+                        new_points = current_points + points_delta
 
                         fed_state = self.model.fed_state
                         fed_state |= {
                             "total_bets": fed_state["total_bets"] + bet,
-                            "balance": fed_state["balance"] - points_won,
-                            "total_payouts": fed_state["total_payouts"] + points_won,
+                            "balance": fed_state["balance"] - points_delta,
+                            "total_payouts": fed_state["total_payouts"] + points_delta,
                         }
 
                         user_data.setdefault("statistics", {}).update(
@@ -2106,7 +2180,8 @@ class EconELO(interactions.Extension):
                                     "gambles": 1,
                                     "gamble_wins": 1,
                                     "points_gambled": bet,
-                                    "points_won": points_won,
+                                    "points_won": points_delta,
+                                    "tax_paid": tax_amount,
                                 }.items()
                             }
                         )
@@ -2116,12 +2191,13 @@ class EconELO(interactions.Extension):
                         await self.model.update_market_state()
                         await self.model.log_points_transaction(
                             user_id,
-                            points_won,
-                            f"Number guessing game: won {points_won} points (x{multiplier})",
+                            points_delta,
+                            f"Number guessing game: won {points_delta} points (x{multiplier})",
                             "casino_guess",
                         )
 
-                        win_msg = f"Congratulations! You guessed the number in {5 - rounds_left} rounds! Target was: {target}. Multiplier: x{multiplier}. You won: {points_won:,} points!"
+                        tax_text = f" (Tax: {tax_amount:,})" if tax_amount else ""
+                        win_msg = f"Congratulations! You guessed the number in {5 - rounds_left} rounds! Target was: {target}. Multiplier: x{multiplier}. You won: {points_delta:,} points{tax_text}!"
 
                         await ctx.channel.send(
                             embed=await self.create_embed(
@@ -2148,11 +2224,12 @@ class EconELO(interactions.Extension):
                     )
                     return
 
-            new_points = current_points - bet
+            points_delta, tax_amount = await self.model.apply_casino_tax(bet, False)
+            new_points = current_points + points_delta
             fed_state = self.model.fed_state
             fed_state |= {
                 "total_bets": fed_state["total_bets"] + bet,
-                "balance": fed_state["balance"] + bet,
+                "balance": fed_state["balance"] - points_delta,
             }
 
             user_data.setdefault("statistics", {}).update(
@@ -2161,7 +2238,8 @@ class EconELO(interactions.Extension):
                     for k, v in {
                         "gambles": 1,
                         "points_gambled": bet,
-                        "points_lost": bet,
+                        "points_lost": abs(points_delta),
+                        "tax_paid": tax_amount,
                     }.items()
                 }
             )
@@ -2170,10 +2248,11 @@ class EconELO(interactions.Extension):
             await self.model.update_user_elo(user_id, user_data)
             await self.model.update_market_state()
             await self.model.log_points_transaction(
-                user_id, -bet, "Number guessing game: lost", "casino_guess"
+                user_id, points_delta, "Number guessing game: lost", "casino_guess"
             )
 
-            lose_msg = f"Game Over! The number was {target}. You lost {bet:,} points! Your guesses: {', '.join(map(str, guessed_numbers))}."
+            tax_text = f" (Tax: {tax_amount:,})" if tax_amount else ""
+            lose_msg = f"Game Over! The number was {target}. You lost {abs(points_delta):,} points{tax_text}! Your guesses: {', '.join(map(str, guessed_numbers))}."
 
             await ctx.channel.send(
                 embed=await self.create_embed(
@@ -2303,9 +2382,13 @@ class EconELO(interactions.Extension):
                 opponent_choice = random.choice(tuple(choices))
                 fed_state = self.model.fed_state
 
-            points_delta = (
+            base_points = (
                 lambda x, y: 0 if x == y else bet if y == choices[x][0] else -bet
             )(choice, opponent_choice)
+            won = base_points > 0
+            points_delta, tax_amount = await self.model.apply_casino_tax(
+                base_points, won
+            )
             new_points = current_points + points_delta
 
             if opponent:
@@ -2324,6 +2407,7 @@ class EconELO(interactions.Extension):
                                     "points_gambled": bet,
                                     "points_won": max(pd, 0),
                                     "points_lost": max(-pd, 0),
+                                    "tax_paid": tax_amount,
                                 }.items()
                             }
                         )
@@ -2361,6 +2445,7 @@ class EconELO(interactions.Extension):
                                 "points_gambled": bet,
                                 "points_won": max(points_delta, 0),
                                 "points_lost": max(-points_delta, 0),
+                                "tax_paid": tax_amount,
                             }.items()
                         }
                     )
@@ -2380,12 +2465,14 @@ class EconELO(interactions.Extension):
                     )
                 )
 
+            tax_text = f" (Tax: {tax_amount:,})" if tax_amount else ""
+
             if points_delta == 0:
                 description = f"It's a tie! Both chose {choices[choice][1]}"
             elif points_delta > 0:
-                description = f"You won! {choices[choice][1]} beats {choices[opponent_choice][1]}! You gained {points_delta:,} points!"
+                description = f"You won! {choices[choice][1]} beats {choices[opponent_choice][1]}! You gained {points_delta:,} points{tax_text}!"
             else:
-                description = f"You lost! {choices[opponent_choice][1]} beats {choices[choice][1]}! You lost {abs(points_delta):,} points!"
+                description = f"You lost! {choices[opponent_choice][1]} beats {choices[choice][1]}! You lost {abs(points_delta):,} points{tax_text}!"
 
             if opponent:
                 description += (
@@ -2841,9 +2928,8 @@ class EconELO(interactions.Extension):
                 try:
                     await self.send_success(
                         None,
-                        f"<@{user_id}> earned {points} points! {chr(10).join(bonuses)}.",
+                        f"<@{user_id}> earned {points} points. {chr(10).join(bonuses)}.",
                         log_to_channel=True,
-                        ephemeral=False,
                     )
                 except Exception as e:
                     logger.error(
@@ -2905,9 +2991,8 @@ class EconELO(interactions.Extension):
                         if all((channel, user)):
                             await self.send_success(
                                 None,
-                                f"Congratulations {user.mention}! You've reached level {level_data['new_level']} and earned the title: {level_data['title']}.",
+                                f"{user.mention} have reached level {level_data['new_level']} and earned the title: {level_data['title']}.",
                                 log_to_channel=True,
-                                ephemeral=False,
                             )
                     except Exception as e:
                         logger.error(
@@ -3034,7 +3119,7 @@ class EconELO(interactions.Extension):
 
                 await self.send_success(
                     None,
-                    f"<@{reactor_id}> completed {cfg['add_reaction']['description']}! (+{task_points} points)",
+                    f"<@{reactor_id}> completed {cfg['add_reaction']['description']}! (+{task_points} points).",
                     log_to_channel=True,
                 )
 
@@ -3046,7 +3131,7 @@ class EconELO(interactions.Extension):
             try:
                 await self.send_success(
                     None,
-                    f"<@{target_id}> received {emoji} from <@{reactor_id}> and earned {points} points!",
+                    f"<@{target_id}> received {emoji} from <@{reactor_id}> and earned {points} points.",
                     log_to_channel=True,
                 )
             except Exception as e:
