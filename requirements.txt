@@ -1,5 +1,4 @@
 aiofiles
-aiopath
 aioshutil
 discord-py-interactions
 orjson
