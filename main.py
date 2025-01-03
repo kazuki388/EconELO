@@ -951,6 +951,11 @@ class EconELO(interactions.Extension):
         description="Play games and gamble your points for a chance to win more",
     )
 
+    module_group_help = module_base.group(
+        name="help",
+        description="Get help with EconELO commands",
+    )
+
     # Command (Mint)
 
     @module_group_debug.subcommand(
@@ -3196,3 +3201,247 @@ class EconELO(interactions.Extension):
 
         except Exception as e:
             logger.error(f"Error resetting daily reactions: {e}", exc_info=True)
+
+    # Command (Help)
+
+    @module_group_help.subcommand(
+        sub_cmd_name="main",
+        sub_cmd_description="Get general help about EconELO system",
+    )
+    async def help_main(self, ctx: interactions.SlashContext) -> None:
+        try:
+            embed = await self.create_embed(
+                title="EconELO System Help",
+                description="Welcome to the EconELO economy system! Here's what you need to know:",
+                color=EmbedColor.INFO,
+            )
+
+            fields = [
+                {
+                    "name": "Points System",
+                    "value": "Earn points through daily activities, role rewards, and casino games. Points can be used for betting and future features.",
+                    "inline": True,
+                },
+                {
+                    "name": "Levels",
+                    "value": "Gain levels as you accumulate points. Each level gives you new titles and perks.",
+                    "inline": True,
+                },
+                {
+                    "name": "Federal Reserve",
+                    "value": "The system includes a federal reserve that manages point supply, taxes, and interest rates.",
+                    "inline": True,
+                },
+                {
+                    "name": "Available Commands",
+                    "value": "- `/econelo help claim` - Learn about claiming rewards\n"
+                    "- `/econelo help casino` - Learn about casino games\n"
+                    "- `/econelo help view` - Learn about viewing stats",
+                    "inline": True,
+                },
+                {
+                    "name": "Need More Help?",
+                    "value": "Ask a moderator or administrator for assistance.",
+                    "inline": True,
+                },
+            ]
+
+            for field in fields:
+                embed.add_field(
+                    name=field["name"], value=field["value"], inline=field["inline"]
+                )
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error displaying main help: {e}", exc_info=True)
+            await self.send_error(ctx, "An error occurred while displaying help.")
+
+    @module_group_help.subcommand(
+        sub_cmd_name="casino",
+        sub_cmd_description="Get help about casino games",
+    )
+    async def help_casino(self, ctx: interactions.SlashContext) -> None:
+        try:
+            embed = await self.create_embed(
+                title="Casino Games Help",
+                description="Try your luck with various casino games! Here are the available games:",
+                color=EmbedColor.INFO,
+            )
+
+            fields = [
+                {
+                    "name": "Dice Roll (`/econelo casino dice`)",
+                    "value": "- Bet points and roll two dice\n"
+                    "- Doubles give 2x multiplier\n"
+                    "- Double 6's give 3x multiplier\n"
+                    "- Play against house or other players",
+                    "inline": True,
+                },
+                {
+                    "name": "Coin Flip (`/econelo casino flip`)",
+                    "value": "- Bet on heads or tails\n"
+                    "- Choose multiplier (1.5x, 2x, 3x)\n"
+                    "- Higher multiplier = higher risk/reward\n"
+                    "- Challenge players or play against house",
+                    "inline": True,
+                },
+                {
+                    "name": "🔢 Number Guess (`/econelo casino guess`)",
+                    "value": "- Guess number between 1-100\n"
+                    "- 5 rounds to win\n"
+                    "- Earlier wins = higher multiplier\n"
+                    "- Round 1: 10x → Round 5: 0.5x",
+                    "inline": True,
+                },
+                {
+                    "name": "Rock Paper Scissors (`/econelo casino rps`)",
+                    "value": "- Choose rock, paper, or scissors\n"
+                    "- Play against house or other players\n"
+                    "- Winner takes the bet amount",
+                    "inline": True,
+                },
+                {
+                    "name": "Important Notes",
+                    "value": "- All bets are taxed\n"
+                    "- House has maximum bet limits\n"
+                    "- Don't bet more than you can afford to lose",
+                    "inline": True,
+                },
+            ]
+
+            for field in fields:
+                embed.add_field(
+                    name=field["name"], value=field["value"], inline=field["inline"]
+                )
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error displaying casino help: {e}", exc_info=True)
+            await self.send_error(
+                ctx, "An error occurred while displaying casino help."
+            )
+
+    @module_group_help.subcommand(
+        sub_cmd_name="claim",
+        sub_cmd_description="Get help about claiming rewards",
+    )
+    async def help_claim(self, ctx: interactions.SlashContext) -> None:
+        try:
+            embed = await self.create_embed(
+                title="Claiming Rewards Help",
+                description="Learn how to claim various rewards in the EconELO system:",
+                color=EmbedColor.INFO,
+            )
+
+            fields = [
+                {
+                    "name": "Daily Rewards (`/econelo claim daily`)",
+                    "value": "- Claim once every 24 hours\n"
+                    "- Amount based on your status role\n"
+                    "- Higher status = more points\n"
+                    "- Builds daily login streak",
+                    "inline": True,
+                },
+                {
+                    "name": "Role Rewards (`/econelo claim role`)",
+                    "value": "- Claim rewards based on your role tier\n"
+                    "- Types: daily, weekly, monthly, seasonal, yearly\n"
+                    "- Higher roles get larger rewards\n"
+                    "- Each type has its own cooldown",
+                    "inline": True,
+                },
+                {
+                    "name": "Status Roles",
+                    "value": "\n".join(
+                        f"- <@&{role_id}>" for role_id in self.model.cfg.status_roles
+                    ),
+                    "inline": True,
+                },
+                {
+                    "name": "Reward Roles",
+                    "value": "\n".join(
+                        f"- <@&{role_id}>" for role_id in self.model.cfg.reward_roles
+                    ),
+                    "inline": True,
+                },
+                {
+                    "name": "Notes",
+                    "value": "- All claims are taxed based on amount\n"
+                    "- Remember to claim regularly\n"
+                    "- Higher roles have higher tax rates",
+                    "inline": True,
+                },
+            ]
+
+            for field in fields:
+                embed.add_field(
+                    name=field["name"], value=field["value"], inline=field["inline"]
+                )
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error displaying claim help: {e}", exc_info=True)
+            await self.send_error(ctx, "An error occurred while displaying claim help.")
+
+    @module_group_help.subcommand(
+        sub_cmd_name="view",
+        sub_cmd_description="Get help about viewing stats and information",
+    )
+    async def help_view(self, ctx: interactions.SlashContext) -> None:
+        try:
+            embed = await self.create_embed(
+                title="Viewing Information Help",
+                description="Learn how to view various statistics and information:",
+                color=EmbedColor.INFO,
+            )
+
+            fields = [
+                {
+                    "name": "Profile (`/econelo view profile`)",
+                    "value": "- View your current points\n"
+                    "- See total earnings\n"
+                    "- Check your level and titles\n"
+                    "- View activity statistics\n"
+                    "- Check skill levels",
+                    "inline": True,
+                },
+                {
+                    "name": "Leaderboard (`/econelo view leaderboard`)",
+                    "value": "- See top point earners\n"
+                    "- Navigate through pages\n"
+                    "- Compare your ranking\n"
+                    "- View others' achievements",
+                    "inline": True,
+                },
+                {
+                    "name": "Statistics Shown",
+                    "value": "- Current points balance\n"
+                    "- Total points earned\n"
+                    "- Messages and reactions\n"
+                    "- Gambling statistics\n"
+                    "- Achievement progress",
+                    "inline": True,
+                },
+                {
+                    "name": "Tips",
+                    "value": "- Check profile regularly\n"
+                    "- Track your progress\n"
+                    "- Monitor your gambling stats\n"
+                    "- Keep an eye on debt",
+                    "inline": True,
+                },
+            ]
+
+            for field in fields:
+                embed.add_field(
+                    name=field["name"], value=field["value"], inline=field["inline"]
+                )
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error displaying view help: {e}", exc_info=True)
+            await self.send_error(ctx, "An error occurred while displaying view help.")
