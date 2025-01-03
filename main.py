@@ -588,18 +588,15 @@ class Model:
             fed_state = self.fed_state
             fed_state.update(
                 {
-                    "reserve": fed_state["reserve"]
-                    - final_amount
-                    + (tax_amount if tax_amount > 0 else 0),
-                    "total_supply": fed_state["total_supply"] + final_amount,
-                    "tax_collected": fed_state.get("tax_collected", 0)
-                    + (tax_amount if tax_amount > 0 else 0),
+                    "reserve": fed_state["reserve"] - amount + tax_amount,
+                    "total_supply": fed_state["total_supply"] + amount,
+                    "tax_collected": fed_state.get("tax_collected", 0) + tax_amount,
                     "daily_emissions": {
                         **fed_state["daily_emissions"],
                         f"{reward_type}_rewards": fed_state["daily_emissions"].get(
                             f"{reward_type}_rewards", 0
                         )
-                        + final_amount,
+                        + amount,
                     },
                 }
             )
@@ -1369,12 +1366,16 @@ class EconELO(interactions.Extension):
                 return
 
             daily_reward = self.model.cfg.status_amounts[highest_role]["daily"]
-            if not await self.model.emit_points(
+            final_amount, tax_amount = await self.model.calculate_tax(
+                int(daily_reward), "claim"
+            )
+            emit_result = await self.model.emit_points(
                 author_id,
                 int(daily_reward),
                 "daily",
                 "Daily reward claim",
-            ):
+            )
+            if not emit_result:
                 await self.send_error(
                     ctx,
                     "Daily rewards are currently unavailable. Please try again later.",
@@ -1387,10 +1388,11 @@ class EconELO(interactions.Extension):
                 "daily_login": user_elo.get("streaks", {}).get("daily_login", 0) + 1,
             }
 
+            tax_rate = round((tax_amount / daily_reward) * 100, 2)
             await self.model.update_user_elo(author_id, user_elo)
             await self.send_success(
                 ctx,
-                f"You claimed your daily reward of {daily_reward:,} points.",
+                f"You claimed your daily reward of {final_amount:,} points (Tax: {tax_amount:,} points, Rate: {tax_rate}%).",
             )
 
         except Exception as e:
@@ -1456,12 +1458,15 @@ class EconELO(interactions.Extension):
                 )
                 return
 
-            if not await self.model.emit_points(
+            final_amount, tax_amount = await self.model.calculate_tax(int(reward_amount), "claim")
+            emit_result = await self.model.emit_points(
                 author_id,
                 int(reward_amount),
-                "role",
+                "role", 
                 f"{claim_type.capitalize()} {role_name} role reward claim",
-            ):
+            )
+
+            if not emit_result:
                 await self.send_error(
                     ctx,
                     f"Role `{claim_type}` rewards are currently unavailable. Please try again later.",
@@ -1471,9 +1476,10 @@ class EconELO(interactions.Extension):
             user_elo["role_status"] = {**role_status, claim_type: now}
             await self.model.update_user_elo(author_id, user_elo)
 
+            tax_rate = round((tax_amount / reward_amount) * 100, 2)
             await self.send_success(
                 ctx,
-                f"You claimed your {claim_type} `{role_name}` reward of `{reward_amount:,}` points.",
+                f"You claimed your {claim_type} `{role_name}` reward of `{final_amount:,}` points (Tax: {tax_amount:,} points, Rate: {tax_rate}%).",
             )
 
         except Exception as e:
