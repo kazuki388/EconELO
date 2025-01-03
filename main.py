@@ -1484,8 +1484,8 @@ class EconELO(interactions.Extension):
                     {
                         "name": "Skills",
                         "value": str(
-                            "\n".join(
-                                f"{skill.title()}: {value}/100"
+                            "- ".join(
+                                f"{skill.title()}: `{value}/100`"
                                 for skill, value in skills.items()
                             )
                         ),
@@ -2988,11 +2988,12 @@ class EconELO(interactions.Extension):
 
             if bonuses and points > self.model.cfg.message_reward["base"]["max"]:
                 try:
-                    embed = await self.create_embed(
-                        title="Points Earned!",
-                        description=f"<@{user_id}> earned {points} points!\n{chr(10).join(bonuses)}",
+                    await self.send_success(
+                        None,
+                        f"<@{user_id}> earned {points} points! {chr(10).join(bonuses)}.",
+                        log_to_channel=True,
+                        ephemeral=False
                     )
-                    await event.message.channel.send(embed=embed, delete_after=10)
                 except Exception as e:
                     logger.error(f"Failed to send points notification: {e}")
 
@@ -3049,12 +3050,12 @@ class EconELO(interactions.Extension):
                             user_id
                         ), await self.bot.fetch_channel(log_channel_id)
                         if all((channel, user)):
-                            embed = await self.create_embed(
-                                title="Level Up!",
-                                description=f"Congratulations {user.mention}! You've reached level {level_data['new_level']} and earned the title: {level_data['title']}",
-                                color=0x00FF00,
+                            await self.send_success(
+                                None,
+                                f"Congratulations {user.mention}! You've reached level {level_data['new_level']} and earned the title: {level_data['title']}.",
+                                log_to_channel=True,
+                                ephemeral=False
                             )
-                            await channel.send(embed=embed)
                     except Exception as e:
                         logger.error(f"Failed to send level up notification: {e}")
                         await self.send_error(
@@ -3188,11 +3189,11 @@ class EconELO(interactions.Extension):
             await self.model.update_user_elo(target_id, user_elo)
 
             try:
-                embed = await self.create_embed(
-                    title="Reaction Reward",
-                    description=f"<@{target_id}> received {emoji} from <@{reactor_id}> and earned {points} points!",
+                await self.send_success(
+                    None,
+                    f"<@{target_id}> received {emoji} from <@{reactor_id}> and earned {points} points!",
+                    log_to_channel=True
                 )
-                await message.channel.send(embed=embed, delete_after=10)
             except Exception as e:
                 logger.error(f"Failed to send reaction notification: {e}")
                 await self.send_error(
