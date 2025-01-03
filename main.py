@@ -354,6 +354,23 @@ class Config:
         }
     )
 
+    tax_rates: dict[str, dict[str, float]] = field(
+        default_factory=lambda: {
+            "claim": {
+                "0": 0.00,
+                "1000": 0.05,
+                "5000": 0.10,
+                "10000": 0.15,
+            },
+            "casino": {
+                "0": 0.05,
+                "1000": 0.10,
+                "5000": 0.15,
+                "10000": 0.20,
+            },
+        }
+    )
+
     def __getitem__(self, key: str) -> Any:
         try:
             return getattr(self, key)
@@ -535,34 +552,104 @@ class Model:
             raise
 
     async def emit_points(
-        self, user_id: str, amount: int, reward_type: str, reason: str
+        self,
+        user_id: str,
+        amount: int,
+        reward_type: str,
+        reason: str,
+        apply_tax: bool = True,
+        tax_type: Optional[str] = None,
     ) -> bool:
         try:
             if not await self.can_emit_points(reward_type, amount):
                 return False
 
+            final_amount = amount
+            tax_amount = 0
+
+            if apply_tax and tax_type:
+                final_amount, tax_amount = await self.calculate_tax(amount, tax_type)
+
             user_data = await self.get_user_elo(user_id)
-            points = user_data.get("points", 0)
-            total_points = user_data.get("total_points", 0)
-            user_data |= {
-                "points": points + amount,
-                "total_points": total_points + amount,
-            }
+            points, total_points = (
+                user_data.get(k, 0) for k in ("points", "total_points")
+            )
+
+            user_data |= dict(
+                points=points + final_amount, total_points=total_points + final_amount
+            )
 
             fed_state = self.fed_state
-            fed_state["reserve"] -= amount
-            fed_state["total_supply"] += amount
-            fed_state["daily_emissions"][f"{reward_type}_rewards"] += amount
+            fed_state.update(
+                {
+                    "reserve": fed_state["reserve"]
+                    - final_amount
+                    + (tax_amount if tax_amount > 0 else 0),
+                    "total_supply": fed_state["total_supply"] + final_amount,
+                    "tax_collected": fed_state.get("tax_collected", 0)
+                    + (tax_amount if tax_amount > 0 else 0),
+                    "daily_emissions": {
+                        **fed_state["daily_emissions"],
+                        f"{reward_type}_rewards": fed_state["daily_emissions"].get(
+                            f"{reward_type}_rewards", 0
+                        )
+                        + final_amount,
+                    },
+                }
+            )
 
             await self.update_user_elo(user_id, user_data)
             await self.save_elo()
-            await self.log_points_transaction(user_id, amount, reason, reward_type)
+
+            await self.log_points_transaction(
+                user_id,
+                final_amount,
+                f"{reason}{' (Tax: ' + f'{tax_amount:,}' + ')' if tax_amount else ''}",
+                reward_type,
+            )
 
             return True
 
         except Exception as e:
             logger.error(f"Error emitting points: {e}", exc_info=True)
             return False
+
+    async def calculate_tax(self, amount: int, tax_type: str) -> tuple[int, int]:
+        try:
+            if not (tax_brackets := self.cfg.tax_rates.get(tax_type)):
+                return amount, 0
+
+            sorted_brackets = tuple(
+                sorted(
+                    map(lambda x: (int(x[0]), x[1]), tax_brackets.items()),
+                    key=lambda x: x[0],
+                )
+            )
+
+            thresholds = tuple(t[0] for t in sorted_brackets)
+            rates = tuple(t[1] for t in sorted_brackets)
+            next_thresholds = thresholds[1:] + (float("inf"),)
+
+            taxable_amounts = tuple(
+                map(
+                    lambda x: min(amount - x[0], x[1] - x[0]),
+                    zip(thresholds, next_thresholds),
+                )
+            )
+
+            taxes = tuple(
+                map(
+                    lambda x: int(x[0] * x[1]) if x[0] > 0 else 0,
+                    zip(taxable_amounts, rates),
+                )
+            )
+
+            total_tax = sum(taxes)
+            return amount - total_tax, total_tax
+
+        except Exception as e:
+            logger.error(f"Error calculating tax: {e}", exc_info=True)
+            return amount, 0
 
     async def log_points_transaction(
         self, user_id: str, amount: int, reason: str, transaction_type: str
@@ -1237,7 +1324,12 @@ class EconELO(interactions.Extension):
 
             daily_reward = self.model.cfg.status_amounts[highest_role]["daily"]
             if not await self.model.emit_points(
-                author_id, int(daily_reward), "daily", "Daily reward claim"
+                author_id,
+                int(daily_reward),
+                "daily",
+                "Daily reward claim",
+                apply_tax=True,
+                tax_type="claim",
             ):
                 await self.send_error(
                     ctx,
@@ -1326,6 +1418,8 @@ class EconELO(interactions.Extension):
                 int(reward_amount),
                 "role",
                 f"{claim_type.capitalize()} {role_name} role reward claim",
+                apply_tax=True,
+                tax_type="claim",
             ):
                 await self.send_error(
                     ctx,
