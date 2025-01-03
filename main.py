@@ -1056,7 +1056,9 @@ class EconELO(interactions.Extension):
                             if role := ctx.guild.get_role(role_id):
                                 await target.add_role(role)
                         except Exception as e:
-                            logger.error(f"Failed to add level role: {e}", exc_info=True)
+                            logger.error(
+                                f"Failed to add level role: {e}", exc_info=True
+                            )
 
                     await self.model.update_user_elo(target_id, user_data)
 
@@ -1387,7 +1389,7 @@ class EconELO(interactions.Extension):
                 ]
 
                 leaderboard_entries = [
-                    f"{i}. {user.username}: {data.get('points', 0):,} points"
+                    f"{i}. {user.mention}: `{data.get('points', 0):,}` points"
                     for i, _, data, user in users_data
                     if user is not None
                 ]
@@ -1511,90 +1513,40 @@ class EconELO(interactions.Extension):
     # Command (Casino Flip)
 
     @module_group_casino.subcommand(
-        sub_cmd_name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="flip",
-            chinese_china="翻硬币",
-            chinese_taiwan="擲硬幣",
-        ),
-        sub_cmd_description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Bet points on coin flip",
-            chinese_china="押注硬币正反面",
-            chinese_taiwan="押注硬幣正反面",
-        ),
+        sub_cmd_name="flip",
+        sub_cmd_description="Bet points on coin flip",
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="bet",
-            chinese_china="押注",
-            chinese_taiwan="押注",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Amount of points to bet",
-            chinese_china="押注的积分数量",
-            chinese_taiwan="押注的積分數量",
-        ),
+        name="bet",
+        description="Amount of points to bet",
         required=True,
         opt_type=interactions.OptionType.INTEGER,
         min_value=1,
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="choice",
-            chinese_china="选择",
-            chinese_taiwan="選擇",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Heads or Tails",
-            chinese_china="正面或反面",
-            chinese_taiwan="正面或反面",
-        ),
+        name="choice",
+        description="Heads or Tails",
         required=True,
         opt_type=interactions.OptionType.STRING,
         choices=[
-            interactions.SlashCommandChoice(name="Heads 正面", value="heads"),
-            interactions.SlashCommandChoice(name="Tails 反面", value="tails"),
+            interactions.SlashCommandChoice(name="Heads", value="heads"),
+            interactions.SlashCommandChoice(name="Tails", value="tails"),
         ],
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="multiplier",
-            chinese_china="倍率",
-            chinese_taiwan="倍率",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Betting multiplier (higher risk, higher reward)",
-            chinese_china="投注倍率（风险越高，回报越高）",
-            chinese_taiwan="投注倍率（風險越高，回報越高）",
-        ),
+        name="multiplier",
+        description="Betting multiplier (higher risk, higher reward)",
         required=True,
         opt_type=interactions.OptionType.STRING,
         choices=[
-            interactions.SlashCommandChoice(name="1.5x (Safe 稳健)", value="1.5"),
-            interactions.SlashCommandChoice(name="2x (Normal 普通)", value="2"),
-            interactions.SlashCommandChoice(name="3x (Risky 冒险)", value="3"),
+            interactions.SlashCommandChoice(name="1.5x (Safe)", value="1.5"),
+            interactions.SlashCommandChoice(name="2x (Normal)", value="2"),
+            interactions.SlashCommandChoice(name="3x (Risky)", value="3"),
         ],
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="opponent",
-            chinese_china="对手",
-            chinese_taiwan="對手",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Member to play against (default: fed)",
-            chinese_china="要与之对赌的成员（默认：赌场）",
-            chinese_taiwan="要與之對賭的成員（預設：賭場）",
-        ),
+        name="opponent",
+        description="Member to play against (default: fed)",
         opt_type=interactions.OptionType.USER,
     )
     async def casino_flip(
@@ -1735,27 +1687,12 @@ class EconELO(interactions.Extension):
             result_emoji, choice_emoji = (
                 "🌝" if x == "heads" else "🌚" for x in (result, choice)
             )
-            locale = ctx.locale or "english_us"
 
-            result_messages = {
-                True: {
-                    "english_us": f"You won! The coin landed on {result} {result_emoji}! Multiplier: {bet_multiplier}x. You gained `{points_delta:,}` points!",
-                    "chinese_china": f"你赢了！硬币落在{result_emoji}面！倍率：{bet_multiplier}x。你赢得了{points_delta:,}积分！",
-                    "chinese_taiwan": f"你贏了！硬幣落在{result_emoji}面！倍率：{bet_multiplier}x。你贏得了{points_delta:,}積分！",
-                },
-                False: {
-                    "english_us": f"You lost! The coin landed on {result} {result_emoji}! Multiplier: {bet_multiplier}x. You lost `{abs(points_delta):,}` points!",
-                    "chinese_china": f"你输了！硬币落在{result_emoji}面！倍率：{bet_multiplier}x。你失去了`{abs(points_delta):,}`积分！",
-                    "chinese_taiwan": f"你輸了！硬幣落在{result_emoji}面！倍率：{bet_multiplier}x。你失去了`{abs(points_delta):,}`積分！",
-                },
-            }
+            description = f"You {'won' if won else 'lost'}! The coin landed on {result} {result_emoji}! Multiplier: {bet_multiplier}x. You {'gained' if won else 'lost'} `{abs(points_delta):,}` points!"
 
-            description = result_messages[won].get(
-                locale, result_messages[won]["english_us"]
-            )
             if opponent:
                 description += (
-                    f"\n<@{opponent_id}>'s new balance: `{opponent_new_points:,}`"
+                    f" <@{opponent_id}>'s new balance: `{opponent_new_points:,}`"
                 )
 
             embed = await self.create_embed(
@@ -1764,14 +1701,8 @@ class EconELO(interactions.Extension):
                 color=EmbedColor.INFO if won else EmbedColor.ERROR,
             )
 
-            balance_texts = {
-                "english_us": "Current Balance",
-                "chinese_china": "当前余额",
-                "chinese_taiwan": "當前餘額",
-            }
-
             embed.add_field(
-                name=balance_texts.get(locale, balance_texts["english_us"]),
+                name="Current Balance",
                 value=f"{new_points:,}",
                 inline=True,
             )
@@ -1786,49 +1717,19 @@ class EconELO(interactions.Extension):
     # Command (Casino Dice)
 
     @module_group_casino.subcommand(
-        sub_cmd_name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="dice",
-            chinese_china="骰子",
-            chinese_taiwan="骰子",
-        ),
-        sub_cmd_description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Roll two dice and try to beat your opponent",
-            chinese_china="掷两个骰子并尝试战胜对手",
-            chinese_taiwan="擲兩個骰子並嘗試戰勝對手",
-        ),
+        sub_cmd_name="dice",
+        sub_cmd_description="Roll two dice and try to beat your opponent",
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="bet",
-            chinese_china="押注",
-            chinese_taiwan="押注",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Amount of points to bet",
-            chinese_china="押注的积分数量",
-            chinese_taiwan="押注的積分數量",
-        ),
+        name="bet",
+        description="Amount of points to bet",
         required=True,
         opt_type=interactions.OptionType.INTEGER,
         min_value=1,
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="opponent",
-            chinese_china="对手",
-            chinese_taiwan="對手",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Member to play against (default: fed)",
-            chinese_china="要与之对赌的成员（默认：赌场）",
-            chinese_taiwan="要與之對賭的成員（預設：賭場）",
-        ),
+        name="opponent",
+        description="Member to play against (default: fed)",
         opt_type=interactions.OptionType.USER,
     )
     async def casino_dice(
@@ -2003,27 +1904,11 @@ class EconELO(interactions.Extension):
             player_roll = f"🎲 {player_dice[0]} + 🎲 {player_dice[1]} = {player_total}"
             opponent_roll = f"🎲 {(casino_dice or opponent_dice)[0]} + 🎲 {(casino_dice or opponent_dice)[1]} = {casino_total if casino_dice else opponent_total}"
 
-            result_messages = {
-                True: {
-                    "english_us": f"You won! Your roll: {player_roll} (x{player_multiplier}) > Opponent: {opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier}). You gained `{points_delta:,}` points!",
-                    "chinese_china": f"你赢了！你的骰子：{player_roll} (x{player_multiplier}) > 对手：{opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier})。你赢得了`{points_delta:,}`积分！",
-                    "chinese_taiwan": f"你贏了！你的骰子：{player_roll} (x{player_multiplier}) > 對手：{opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier})。你贏得了`{points_delta:,}`積分！",
-                },
-                False: {
-                    "english_us": f"You lost! Your roll: {player_roll} (x{player_multiplier}) < Opponent: {opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier}). You lost `{points_delta:,}` points!",
-                    "chinese_china": f"你输了！你的骰子：{player_roll} (x{player_multiplier}) < 对手：{opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier})。你失去了`{points_delta:,}`积分！",
-                    "chinese_taiwan": f"你輸了！你的骰子：{player_roll} (x{player_multiplier}) < 對手：{opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier})。你失去了`{points_delta:,}`積分！",
-                },
-            }
-
-            locale = ctx.locale or "english_us"
-            description = result_messages[won].get(
-                locale, result_messages[won]["english_us"]
-            )
+            description = f"You {'won' if won else 'lost'}! Your roll: {player_roll} (x{player_multiplier}) {'>' if won else '<'} Opponent: {opponent_roll} (x{casino_multiplier if casino_dice else opponent_multiplier}). You {'gained' if won else 'lost'} `{points_delta:,}` points!"
 
             if opponent:
                 description += (
-                    f"\n<@{opponent_id}>'s new balance: `{opponent_new_points:,}`"
+                    f" <@{opponent_id}>'s new balance: `{opponent_new_points:,}`"
                 )
 
             embed = await self.create_embed(
@@ -2032,14 +1917,8 @@ class EconELO(interactions.Extension):
                 color=EmbedColor.INFO if won else EmbedColor.ERROR,
             )
 
-            balance_texts = {
-                "english_us": "Current Balance",
-                "chinese_china": "当前余额",
-                "chinese_taiwan": "當前餘額",
-            }
-
             embed.add_field(
-                name=balance_texts.get(locale, balance_texts["english_us"]),
+                name="Current Balance",
                 value=f"{new_points:,}",
                 inline=True,
             )
@@ -2054,32 +1933,12 @@ class EconELO(interactions.Extension):
     # Command (Casino Guess)
 
     @module_group_casino.subcommand(
-        sub_cmd_name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="guess",
-            chinese_china="猜数字",
-            chinese_taiwan="猜數字",
-        ),
-        sub_cmd_description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Guess a number between 1-100 within 5 rounds",
-            chinese_china="在五回合内猜出1-100之间的数字",
-            chinese_taiwan="在五回合內猜出1-100之間的數字",
-        ),
+        sub_cmd_name="guess",
+        sub_cmd_description="Guess a number between 1-100 within 5 rounds",
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="bet",
-            chinese_china="押注",
-            chinese_taiwan="押注",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Amount of points to bet",
-            chinese_china="押注的积分数量",
-            chinese_taiwan="押注的積分數量",
-        ),
+        name="bet",
+        description="Amount of points to bet",
         required=True,
         opt_type=interactions.OptionType.INTEGER,
         min_value=1,
@@ -2103,34 +1962,17 @@ class EconELO(interactions.Extension):
             target = random.randint(1, 100)
             rounds_left = 5
             guessed_numbers = []
-            locale = ctx.locale or "english_us"
-
-            instruction_msgs = dict.fromkeys(
-                ("english_us", "chinese_china", "chinese_taiwan"), ""
-            ).copy()
 
             def get_multiplier_text(i):
                 multiplier = 10 // (2 ** (i - 1)) if i < 4 else 1 if i == 4 else 0.5
                 return f"{i} round{'s' if i > 1 else ''}: x{multiplier}."
 
-            def get_multiplier_text_cn(i):
-                multiplier = 10 // (2 ** (i - 1)) if i < 4 else 1 if i == 4 else 0.5
-                return f"{i}回合：{multiplier}倍。"
-
-            instruction_msgs.update(
-                {
-                    "english_us": f"Guess a number between 1-100. You have 5 rounds. Fewer rounds = Higher multiplier! {' '.join(get_multiplier_text(i) for i in range(1,6))}",
-                    "chinese_china": f"猜一个1至100之间的数字。你有5回合。用的回合越少=赢得越多！{' '.join(get_multiplier_text_cn(i) for i in range(1,6))}",
-                    "chinese_taiwan": f"猜一個1至100之間的數字。你有5回合。用的回合越少=贏得越多！{' '.join(get_multiplier_text_cn(i) for i in range(1,6))}",
-                }
-            )
+            instruction_msg = f"Guess a number between 1-100. You have 5 rounds. Fewer rounds = Higher multiplier! {' '.join(get_multiplier_text(i) for i in range(1,6))}"
 
             await ctx.send(
                 embed=await self.create_embed(
                     title="Number Guessing Game",
-                    description=instruction_msgs.get(
-                        locale, instruction_msgs["english_us"]
-                    ),
+                    description=instruction_msg,
                 )
             )
 
@@ -2187,45 +2029,29 @@ class EconELO(interactions.Extension):
                             "casino_guess",
                         )
 
-                        win_msgs = {
-                            "english_us": f"Congratulations! You guessed the number in {5 - rounds_left} rounds! Target was: {target}. Multiplier: x{multiplier}. You won: {points_won:,} points!",
-                            "chinese_china": f"恭喜！你用了{5 - rounds_left}回合猜中了数字！目标数字是：{target}。倍率：{multiplier}倍。你赢得了：{points_won:,}积分！",
-                            "chinese_taiwan": f"恭喜！你用了{5 - rounds_left}回合猜中了數字！目標數字是：{target}。倍率：{multiplier}倍。你贏得了：{points_won:,}積分！",
-                        }
+                        win_msg = f"Congratulations! You guessed the number in {5 - rounds_left} rounds! Target was: {target}. Multiplier: x{multiplier}. You won: {points_won:,} points!"
 
                         await ctx.channel.send(
                             embed=await self.create_embed(
                                 title="Number Guessing Game",
-                                description=win_msgs.get(
-                                    locale, win_msgs["english_us"]
-                                ),
+                                description=win_msg,
                             )
                         )
                         return
 
                     if rounds_left:
-                        hint_msgs = {
-                            "english_us": f"{'Higher' if guess < target else 'Lower'}! Rounds left: {rounds_left}. Guessed numbers: {', '.join(map(str, guessed_numbers))}.",
-                            "chinese_china": f"{'大一点' if guess < target else '小一点'}！剩余回合：{rounds_left}。已猜数字：{', '.join(map(str, guessed_numbers))}。",
-                            "chinese_taiwan": f"{'大一點' if guess < target else '小一點'}！剩餘回合：{rounds_left}。已猜數字：{', '.join(map(str, guessed_numbers))}。",
-                        }
+                        hint_msg = f"{'Higher' if guess < target else 'Lower'}! Rounds left: {rounds_left}. Guessed numbers: {', '.join(map(str, guessed_numbers))}."
                         await ctx.channel.send(
                             embed=await self.create_embed(
                                 title="Number Guessing Game",
-                                description=hint_msgs.get(
-                                    locale, hint_msgs["english_us"]
-                                ),
+                                description=hint_msg,
                             )
                         )
 
                 except asyncio.TimeoutError:
                     await self.send_error(
                         ctx,
-                        {
-                            "english_us": "Time's up! Game over.",
-                            "chinese_china": "时间到！游戏结束。",
-                            "chinese_taiwan": "時間到！遊戲結束。",
-                        }.get(locale, "Time's up! Game over."),
+                        "Time's up! Game over.",
                     )
                     return
 
@@ -2254,16 +2080,12 @@ class EconELO(interactions.Extension):
                 user_id, -bet, "Number guessing game: lost", "casino_guess"
             )
 
-            lose_msgs = {
-                "english_us": f"Game Over! The number was {target}. You lost {bet:,} points! Your guesses: {', '.join(map(str, guessed_numbers))}.",
-                "chinese_china": f"游戏结束！目标数字是{target}。你失去了{bet:,}积分！你猜的数字：{', '.join(map(str, guessed_numbers))}。",
-                "chinese_taiwan": f"遊戲結束！目標數字是{target}。你失去了{bet:,}積分！你猜的數字：{', '.join(map(str, guessed_numbers))}。",
-            }
+            lose_msg = f"Game Over! The number was {target}. You lost {bet:,} points! Your guesses: {', '.join(map(str, guessed_numbers))}."
 
             await ctx.channel.send(
                 embed=await self.create_embed(
                     title="Number Guessing Game",
-                    description=lose_msgs.get(locale, lose_msgs["english_us"]),
+                    description=lose_msg,
                     color=EmbedColor.ERROR,
                 )
             )
@@ -2275,70 +2097,30 @@ class EconELO(interactions.Extension):
     # Command (Casino RPS)
 
     @module_group_casino.subcommand(
-        sub_cmd_name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="rps",
-            chinese_china="猜拳",
-            chinese_taiwan="猜拳",
-        ),
-        sub_cmd_description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Play Rock Paper Scissors to win your bet",
-            chinese_china="玩剪刀石头布来赢取赌注",
-            chinese_taiwan="玩剪刀石頭布來贏取賭注",
-        ),
+        sub_cmd_name="rps",
+        sub_cmd_description="Play Rock Paper Scissors to win your bet",
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="bet",
-            chinese_china="押注",
-            chinese_taiwan="押注",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Amount of points to bet",
-            chinese_china="押注的积分数量",
-            chinese_taiwan="押注的積分數量",
-        ),
+        name="bet",
+        description="Amount of points to bet",
         required=True,
         opt_type=interactions.OptionType.INTEGER,
         min_value=1,
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="choice",
-            chinese_china="选择",
-            chinese_taiwan="選擇",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Rock, Paper, or Scissors",
-            chinese_china="石头、布或剪刀",
-            chinese_taiwan="石頭、布或剪刀",
-        ),
+        name="choice",
+        description="Rock, Paper, or Scissors",
         required=True,
         opt_type=interactions.OptionType.STRING,
         choices=[
-            interactions.SlashCommandChoice(name="✊ Rock 石頭", value="rock"),
-            interactions.SlashCommandChoice(name="✋ Paper 布", value="paper"),
-            interactions.SlashCommandChoice(name="✌️ Scissors 剪刀", value="scissors"),
+            interactions.SlashCommandChoice(name="✊ Rock", value="rock"),
+            interactions.SlashCommandChoice(name="✋ Paper", value="paper"),
+            interactions.SlashCommandChoice(name="✌️ Scissors", value="scissors"),
         ],
     )
     @interactions.slash_option(
-        name=interactions.LocalisedName(
-            default_locale="english_us",
-            english_us="opponent",
-            chinese_china="对手",
-            chinese_taiwan="對手",
-        ),
-        description=interactions.LocalisedDesc(
-            default_locale="english_us",
-            english_us="Member to play against (default: fed)",
-            chinese_china="要与之对赌的成员（默认：赌场）",
-            chinese_taiwan="要與之對賭的成員（預設：賭場）",
-        ),
+        name="opponent",
+        description="Member to play against (default: fed)",
         opt_type=interactions.OptionType.USER,
     )
     async def casino_rps(
@@ -2384,20 +2166,13 @@ class EconELO(interactions.Extension):
                     for name, (_, emoji) in choices.items()
                 ]
 
-                locale = ctx.locale or "english_us"
-                challenge_msgs = {
-                    "english_us": f"{opponent.mention}, {ctx.author.mention} challenges you to Rock Paper Scissors! Bet: {bet:,} points.",
-                    "chinese_china": f"{opponent.mention}，{ctx.author.mention} 向你发起剪刀石头布挑战！赌注：{bet:,} 积分。",
-                    "chinese_taiwan": f"{opponent.mention}，{ctx.author.mention} 向你發起剪刀石頭布挑戰！賭注：{bet:,} 積分。",
-                }
+                challenge_msg = f"{opponent.mention}, {ctx.author.mention} challenges you to Rock Paper Scissors! Bet: {bet:,} points."
 
                 action_row = interactions.ActionRow(*buttons)
                 await ctx.send(
                     embed=await self.create_embed(
                         title="Rock Paper Scissors Challenge",
-                        description=challenge_msgs.get(
-                            locale, challenge_msgs["english_us"]
-                        ),
+                        description=challenge_msg,
                     ),
                     components=[action_row],
                 )
@@ -2410,14 +2185,7 @@ class EconELO(interactions.Extension):
                     )
                     opponent_choice = component_ctx.ctx.custom_id.split("_")[1]
                 except asyncio.TimeoutError:
-                    await self.send_error(
-                        ctx,
-                        {
-                            "english_us": "Challenge timed out!",
-                            "chinese_china": "挑战超时！",
-                            "chinese_taiwan": "挑戰超時！",
-                        }.get(locale, "Challenge timed out!"),
-                    )
+                    await self.send_error(ctx, "Challenge timed out!")
                     return
 
             else:
@@ -2475,9 +2243,12 @@ class EconELO(interactions.Extension):
                     fed_state.update(
                         {
                             "total_bets": fed_state["total_bets"] + bet,
-                            "balance": fed_state["balance"] - points_delta,
-                            "total_payouts": fed_state["total_payouts"]
-                            + (points_delta if points_delta > 0 else 0),
+                            "balance": fed_state["reserve"] - points_delta,
+                            "total_payouts": fed_state["total_payouts"] + (points_delta if points_delta > 0 else 0),
+                            "daily_emissions": {
+                                **fed_state["daily_emissions"],
+                                "casino_payouts": fed_state["daily_emissions"]["casino_payouts"] + (points_delta if points_delta > 0 else 0)
+                            }
                         }
                     )
                     user_data.setdefault("statistics", {}).update(
@@ -2508,30 +2279,16 @@ class EconELO(interactions.Extension):
                     )
                 )
 
-            result_msgs = {
-                0: {
-                    "english_us": f"It's a tie! Both chose {choices[choice][1]}",
-                    "chinese_china": f"平局！双方都选择了 {choices[choice][1]}",
-                    "chinese_taiwan": f"平手！雙方都選擇了 {choices[choice][1]}",
-                },
-                bet: {
-                    "english_us": f"You won! {choices[choice][1]} beats {choices[opponent_choice][1]}! You gained {points_delta:,} points!",
-                    "chinese_china": f"你赢了！{choices[choice][1]} 胜过 {choices[opponent_choice][1]}！你赢得了 {points_delta:,} 积分！",
-                    "chinese_taiwan": f"你贏了！{choices[choice][1]} 勝過 {choices[opponent_choice][1]}！你贏得了 {points_delta:,} 積分！",
-                },
-                -bet: {
-                    "english_us": f"You lost! {choices[opponent_choice][1]} beats {choices[choice][1]}! You lost {abs(points_delta):,} points!",
-                    "chinese_china": f"你输了！{choices[opponent_choice][1]} 胜过 {choices[choice][1]}！你失去了 {abs(points_delta):,} 积分！",
-                    "chinese_taiwan": f"你輸了！{choices[opponent_choice][1]} 勝過 {choices[choice][1]}！你失去了 {abs(points_delta):,} 積分！",
-                },
-            }
+            if points_delta == 0:
+                description = f"It's a tie! Both chose {choices[choice][1]}"
+            elif points_delta > 0:
+                description = f"You won! {choices[choice][1]} beats {choices[opponent_choice][1]}! You gained {points_delta:,} points!"
+            else:
+                description = f"You lost! {choices[opponent_choice][1]} beats {choices[choice][1]}! You lost {abs(points_delta):,} points!"
 
-            description = result_msgs[points_delta].get(
-                ctx.locale or "english_us", result_msgs[points_delta]["english_us"]
-            )
             if opponent:
                 description += (
-                    f"\n{opponent.mention}'s new balance: {opponent_new_points:,}"
+                    f" {opponent.mention}'s new balance: {opponent_new_points:,}"
                 )
 
             embed = await self.create_embed(
@@ -2540,11 +2297,7 @@ class EconELO(interactions.Extension):
                 color=EmbedColor.INFO if points_delta >= 0 else EmbedColor.ERROR,
             )
             embed.add_field(
-                name={
-                    "english_us": "Current Balance",
-                    "chinese_china": "当前余额",
-                    "chinese_taiwan": "當前餘額",
-                }.get(ctx.locale or "english_us", "Current Balance"),
+                name="Current Balance",
                 value=f"{new_points:,}",
                 inline=True,
             )
@@ -2992,7 +2745,9 @@ class EconELO(interactions.Extension):
                         ephemeral=False,
                     )
                 except Exception as e:
-                    logger.error(f"Failed to send points notification: {e}", exc_info=True)
+                    logger.error(
+                        f"Failed to send points notification: {e}", exc_info=True
+                    )
 
             await update_task
 
@@ -3054,7 +2809,9 @@ class EconELO(interactions.Extension):
                                 ephemeral=False,
                             )
                     except Exception as e:
-                        logger.error(f"Failed to send level up notification: {e}", exc_info=True)
+                        logger.error(
+                            f"Failed to send level up notification: {e}", exc_info=True
+                        )
                         await self.send_error(
                             channel, "Failed to send level up notification."
                         )
@@ -3192,7 +2949,9 @@ class EconELO(interactions.Extension):
                     log_to_channel=True,
                 )
             except Exception as e:
-                logger.error(f"Failed to send reaction notification: {e}", exc_info=True)
+                logger.error(
+                    f"Failed to send reaction notification: {e}", exc_info=True
+                )
                 await self.send_error(
                     None, "Failed to send reaction notification", log_to_channel=True
                 )
