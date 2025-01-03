@@ -1461,11 +1461,13 @@ class EconELO(interactions.Extension):
                     )
                     return
 
-            final_amount, tax_amount = await self.model.calculate_tax(int(reward_amount), "claim")
+            final_amount, tax_amount = await self.model.calculate_tax(
+                int(reward_amount), "claim"
+            )
             emit_result = await self.model.emit_points(
                 author_id,
                 int(reward_amount),
-                "role", 
+                "role",
                 f"{claim_type.capitalize()} {role_name} role reward claim",
             )
 
@@ -1499,6 +1501,8 @@ class EconELO(interactions.Extension):
         ctx: interactions.SlashContext,
     ) -> None:
         try:
+            await ctx.defer()
+
             users = {
                 k: v
                 for k, v in self.model.elo.get("users", {}).items()
@@ -1548,7 +1552,16 @@ class EconELO(interactions.Extension):
             paginator = Paginator(
                 client=self.bot,
                 pages=pages,
-                timeout_interval=120,
+                timeout_interval=60,
+                show_callback_button=True,
+                show_select_menu=True,
+                show_back_button=True,
+                show_next_button=True,
+                show_first_button=True,
+                show_last_button=True,
+                default_title="Points Leaderboard",
+                wrong_user_message="This leaderboard can only be controlled by the user who requested it.",
+                hide_buttons_on_stop=True,
             )
             await paginator.send(ctx)
 
