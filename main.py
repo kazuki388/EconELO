@@ -91,10 +91,6 @@ class Config:
     )
     guild_id: int = 1150630510696075404
 
-    role_initial_points: dict[str, int] = field(
-        default_factory=lambda: {"electoral": 100, "approved": 50, "temporary": 20}
-    )
-
     reward_amounts: dict[int, dict[str, float]] = field(
         default_factory=lambda: {
             1241802041576390687: {
@@ -395,8 +391,8 @@ class Model:
             logger.error("Failed to load ELO data: %r", e)
             raise
         except Exception as e:
-            logger.critical("Unexpected error loading ELO data: %r", e)
-            raise
+            logger.critical("Unexpected error loading ELO data: %r", e, exc_info=True)
+            raise e
 
     async def save_elo(self) -> None:
         try:
@@ -456,7 +452,7 @@ class Model:
             await self.save_elo()
 
         except Exception as e:
-            logger.error(f"Error updating user ELO: {e}")
+            logger.error(f"Error updating user ELO: {e}", exc_info=True)
             raise
 
     async def can_emit_points(self, reward_type: str, amount: int) -> bool:
@@ -470,15 +466,22 @@ class Model:
                 fed_state["daily_emissions"] = {k: 0 for k in daily_emissions}
                 fed_state["last_reset"] = today
 
-            return not (
-                fed_state["reserve"] - amount < federal_reserve["min_reserve"]
-                or reward_type in reward_limits
-                and daily_emissions.get(f"{reward_type}_rewards", 0) + amount
-                > reward_limits[reward_type]
-            )
+            if fed_state["reserve"] - amount < federal_reserve["min_reserve"]:
+                return False
+
+            if reward_type in reward_limits:
+                current_emissions = daily_emissions.get(f"{reward_type}_rewards", 0)
+                limit = reward_limits.get(reward_type, 0)
+                if (
+                    isinstance(limit, (int, float))
+                    and current_emissions + amount > limit
+                ):
+                    return False
+
+            return True
 
         except Exception as e:
-            logger.error(f"Error checking point emission: {e}")
+            logger.error(f"Error checking point emission: {e}", exc_info=True)
             return False
 
     async def update_market_state(self) -> None:
@@ -553,7 +556,7 @@ class Model:
             return True
 
         except Exception as e:
-            logger.error(f"Error emitting points: {e}")
+            logger.error(f"Error emitting points: {e}", exc_info=True)
             return False
 
     async def log_points_transaction(
@@ -593,7 +596,6 @@ class EconELO(interactions.Extension):
         self.REWARD_ROLES = set(self.cfg.reward_roles)
         self.daily_reward = self.cfg.daily_points
         self.role_rewards = self.cfg.reward_amounts
-        self.role_initial_points = self.cfg.role_initial_points
 
         self.welcome_base_points = self.cfg.welcome_base_points
         self.newbie_tasks = self.cfg.newbie_tasks
@@ -619,19 +621,10 @@ class EconELO(interactions.Extension):
                     }
                 )
 
-            if self.roles is not None:
-                missing_roles = set(map(str, self.REWARD_ROLES)) - self.roles.keys()
-                self.roles.update(
-                    {
-                        role_id: {"points": self.role_initial_points}
-                        for role_id in missing_roles
-                    }
-                )
-
             await self.model.save_elo()
 
         except Exception as e:
-            logger.error(f"Initialization failed: {e!r}")
+            logger.error(f"Initialization failed: {e!r}", exc_info=True)
             raise
 
     # Check methods
@@ -727,7 +720,9 @@ class EconELO(interactions.Extension):
         except NotFound as nf:
             logger.error(f"Channel with ID {channel_id} not found: {nf!r}")
         except Exception as e:
-            logger.error(f"Error sending message to channel {channel_id}: {e!r}")
+            logger.error(
+                f"Error sending message to channel {channel_id}: {e!r}", exc_info=True
+            )
 
     async def send_to_forum_post(
         self, forum_id: int, post_id: int, embed: interactions.Embed
@@ -751,7 +746,9 @@ class EconELO(interactions.Extension):
         except NotFound:
             logger.error(f"{forum_id=}, {post_id=} - Forum or post not found")
         except Exception as e:
-            logger.error(f"Forum post error [{forum_id=}, {post_id=}]: {e!r}")
+            logger.error(
+                f"Forum post error [{forum_id=}, {post_id=}]: {e!r}", exc_info=True
+            )
 
     async def send_error(
         self,
@@ -857,7 +854,7 @@ class EconELO(interactions.Extension):
             )
 
         except Exception as e:
-            logger.error(f"Error minting points: {e}")
+            logger.error(f"Error minting points: {e}", exc_info=True)
             await self.send_error(ctx, "An error occurred while minting points.")
 
     # Command (Export)
@@ -939,7 +936,7 @@ class EconELO(interactions.Extension):
                 try:
                     os.unlink(filename)
                 except Exception as e:
-                    logger.error(f"Error cleaning up temp file: {e}")
+                    logger.error(f"Error cleaning up temp file: {e}", exc_info=True)
 
     @debug_export.autocomplete("type")
     async def autocomplete_debug_export_type(
@@ -1059,7 +1056,7 @@ class EconELO(interactions.Extension):
                             if role := ctx.guild.get_role(role_id):
                                 await target.add_role(role)
                         except Exception as e:
-                            logger.error(f"Failed to add level role: {e}")
+                            logger.error(f"Failed to add level role: {e}", exc_info=True)
 
                     await self.model.update_user_elo(target_id, user_data)
 
@@ -1085,7 +1082,7 @@ class EconELO(interactions.Extension):
             )
 
         except Exception as e:
-            logger.error(f"Error adjusting points: {e}")
+            logger.error(f"Error adjusting points: {e}", exc_info=True)
             await self.send_error(ctx, "An error occurred while adjusting points.")
 
     # Command (Quality Bonus)
@@ -1187,10 +1184,10 @@ class EconELO(interactions.Extension):
             try:
                 await tasks[-1]
             except Exception as e:
-                logger.debug(f"Failed to add reaction: {e}")
+                logger.debug(f"Failed to add reaction: {e}", exc_info=True)
 
         except Exception as e:
-            logger.error(f"Error setting quality bonus: {e}")
+            logger.error(f"Error setting quality bonus: {e}", exc_info=True)
             await self.send_error(
                 ctx, "An error occurred while setting the quality bonus."
             )
@@ -1253,7 +1250,7 @@ class EconELO(interactions.Extension):
             )
 
         except Exception as e:
-            logger.error(f"Failed to claim daily reward: {e}")
+            logger.error(f"Failed to claim daily reward: {e}", exc_info=True)
             await self.send_error(ctx, "An error occurred while claiming the reward.")
 
     # Command (Claim Role)
@@ -1346,7 +1343,7 @@ class EconELO(interactions.Extension):
             )
 
         except Exception as e:
-            logger.error(f"Failed to claim role reward: {e}")
+            logger.error(f"Failed to claim role reward: {e}", exc_info=True)
             await self.send_error(ctx, "An error occurred while claiming the reward.")
 
     # Command (Leaderboard)
@@ -1413,7 +1410,7 @@ class EconELO(interactions.Extension):
             await paginator.send(ctx)
 
         except Exception as e:
-            logger.error(f"Failed to display leaderboard: {e}")
+            logger.error(f"Failed to display leaderboard: {e}", exc_info=True)
             await self.send_error(
                 ctx, "An error occurred while fetching the leaderboard."
             )
@@ -1508,7 +1505,7 @@ class EconELO(interactions.Extension):
             await ctx.send(embed=embed)
 
         except Exception as e:
-            logger.error(f"Failed to display profile: {e}")
+            logger.error(f"Failed to display profile: {e}", exc_info=True)
             await self.send_error(ctx, "An error occurred while fetching the profile.")
 
     # Command (Casino Flip)
@@ -1783,7 +1780,7 @@ class EconELO(interactions.Extension):
             await ctx.send(embed=embed)
 
         except Exception as e:
-            logger.error(f"Error in fed flip: {e}")
+            logger.error(f"Error in fed flip: {e}", exc_info=True)
             await self.send_error(ctx, "An error occurred while processing your bet.")
 
     # Command (Casino Dice)
@@ -2051,7 +2048,7 @@ class EconELO(interactions.Extension):
             await ctx.send(embed=embed)
 
         except Exception as e:
-            logger.error(f"Error in fed dice: {e}")
+            logger.error(f"Error in fed dice: {e}", exc_info=True)
             await self.send_error(ctx, "An error occurred while processing your bet.")
 
     # Command (Casino Guess)
@@ -2272,7 +2269,7 @@ class EconELO(interactions.Extension):
             )
 
         except Exception as e:
-            logger.error(f"Error in fed guess: {e}")
+            logger.error(f"Error in fed guess: {e}", exc_info=True)
             await self.send_error(ctx, "An error occurred while processing your game.")
 
     # Command (Casino RPS)
@@ -2560,7 +2557,7 @@ class EconELO(interactions.Extension):
                 await ctx.send(embed=embed)
 
         except Exception as e:
-            logger.error(f"Error in fed RPS: {e}")
+            logger.error(f"Error in fed RPS: {e}", exc_info=True)
             await self.send_error(ctx, "An error occurred while processing your game.")
 
     # Listener (Welcome)
@@ -2582,7 +2579,7 @@ class EconELO(interactions.Extension):
             await self.model.update_user_elo(user_id, user_elo)
 
         except Exception as e:
-            logger.error(f"Error in welcome process: {str(e)}")
+            logger.error(f"Error in welcome process: {str(e)}", exc_info=True)
 
     # Listeners (Extension)
 
@@ -2637,7 +2634,7 @@ class EconELO(interactions.Extension):
         except AttributeError:
             return
         except Exception as e:
-            logger.error(f"Failed to reset daily invites: {e}")
+            logger.error(f"Failed to reset daily invites: {e}", exc_info=True)
             raise
 
     @interactions.Task.create(interactions.IntervalTrigger(days=1))
@@ -2713,7 +2710,7 @@ class EconELO(interactions.Extension):
                 logger.info(f"Processed rewards for {len(to_reward)} inviters")
 
         except Exception as e:
-            logger.error(f"Error processing pending rewards: {e!r}")
+            logger.error(f"Error processing pending rewards: {e!r}", exc_info=True)
 
     @interactions.listen(interactions.events.MemberAdd)
     async def on_guild_member_add(self, event: interactions.events.MemberAdd) -> None:
@@ -2773,7 +2770,7 @@ class EconELO(interactions.Extension):
                 await self.model.save_elo()
 
         except Exception as e:
-            logger.error(f"Error processing invite reward: {e}")
+            logger.error(f"Error processing invite reward: {e}", exc_info=True)
 
     @interactions.listen(interactions.events.MemberRemove)
     async def on_guild_member_remove(
@@ -2821,7 +2818,7 @@ class EconELO(interactions.Extension):
                 break
 
         except Exception as e:
-            logger.error(f"Error processing member remove: {e}")
+            logger.error(f"Error processing member remove: {e}", exc_info=True)
 
     # Task (Message Reward)
 
@@ -2992,10 +2989,10 @@ class EconELO(interactions.Extension):
                         None,
                         f"<@{user_id}> earned {points} points! {chr(10).join(bonuses)}.",
                         log_to_channel=True,
-                        ephemeral=False
+                        ephemeral=False,
                     )
                 except Exception as e:
-                    logger.error(f"Failed to send points notification: {e}")
+                    logger.error(f"Failed to send points notification: {e}", exc_info=True)
 
             await update_task
 
@@ -3054,10 +3051,10 @@ class EconELO(interactions.Extension):
                                 None,
                                 f"Congratulations {user.mention}! You've reached level {level_data['new_level']} and earned the title: {level_data['title']}.",
                                 log_to_channel=True,
-                                ephemeral=False
+                                ephemeral=False,
                             )
                     except Exception as e:
-                        logger.error(f"Failed to send level up notification: {e}")
+                        logger.error(f"Failed to send level up notification: {e}", exc_info=True)
                         await self.send_error(
                             channel, "Failed to send level up notification."
                         )
@@ -3065,7 +3062,7 @@ class EconELO(interactions.Extension):
             await self.model.save_elo()
 
         except Exception as e:
-            logger.error(f"Weekly points distribution failed: {e}")
+            logger.error(f"Weekly points distribution failed: {e}", exc_info=True)
 
     async def check_level_up(self, user_id: str) -> Optional[dict]:
         if not (user_data := self.model.elo["users"].get(str(user_id))):
@@ -3097,7 +3094,7 @@ class EconELO(interactions.Extension):
                     ):
                         await member.remove_role(old_role)
                 except Exception as e:
-                    logger.error(f"Failed to remove old role: {e}")
+                    logger.error(f"Failed to remove old role: {e}", exc_info=True)
 
                 try:
                     if new_role_id and (
@@ -3105,7 +3102,7 @@ class EconELO(interactions.Extension):
                     ):
                         await member.add_role(new_role)
                 except Exception as e:
-                    logger.error(f"Failed to add new role: {e}")
+                    logger.error(f"Failed to add new role: {e}", exc_info=True)
 
                 user_data["level"] = int(level)
                 user_data.setdefault("titles", []).append(data["title"])
@@ -3118,7 +3115,7 @@ class EconELO(interactions.Extension):
                 }
 
         except Exception as e:
-            logger.error(f"Error managing level roles: {e}")
+            logger.error(f"Error managing level roles: {e}", exc_info=True)
 
         return None
 
@@ -3192,10 +3189,10 @@ class EconELO(interactions.Extension):
                 await self.send_success(
                     None,
                     f"<@{target_id}> received {emoji} from <@{reactor_id}> and earned {points} points!",
-                    log_to_channel=True
+                    log_to_channel=True,
                 )
             except Exception as e:
-                logger.error(f"Failed to send reaction notification: {e}")
+                logger.error(f"Failed to send reaction notification: {e}", exc_info=True)
                 await self.send_error(
                     None, "Failed to send reaction notification", log_to_channel=True
                 )
@@ -3209,7 +3206,7 @@ class EconELO(interactions.Extension):
             )
 
         except Exception as e:
-            logger.error(f"Error processing reaction: {e}")
+            logger.error(f"Error processing reaction: {e}", exc_info=True)
 
     @interactions.Task.create(interactions.IntervalTrigger(days=1))
     async def reset_daily_reactions(self) -> None:
@@ -3235,4 +3232,4 @@ class EconELO(interactions.Extension):
             logger.info("Daily reaction records reset")
 
         except Exception as e:
-            logger.error(f"Error resetting daily reactions: {e}")
+            logger.error(f"Error resetting daily reactions: {e}", exc_info=True)
