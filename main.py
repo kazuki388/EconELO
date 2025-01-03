@@ -14,7 +14,6 @@ from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiofiles
-import aiopath
 import aioshutil
 import interactions
 import orjson
@@ -409,7 +408,7 @@ class Model:
 
     async def load_elo(self) -> None:
         try:
-            if not await aiopath.Path(ELO_FILE).exists():
+            if not os.path.exists(ELO_FILE):
                 self.elo = {}
                 await self.save_elo()
                 return
@@ -566,7 +565,6 @@ class Model:
         reward_type: str,
         reason: str,
         apply_tax: bool = True,
-        tax_type: Optional[str] = None,
     ) -> bool:
         try:
             if not await self.can_emit_points(reward_type, amount):
@@ -575,8 +573,8 @@ class Model:
             final_amount = amount
             tax_amount = 0
 
-            if apply_tax and tax_type:
-                final_amount, tax_amount = await self.calculate_tax(amount, tax_type)
+            if apply_tax:
+                final_amount, tax_amount = await self.calculate_tax(amount, "claim")
 
             user_data = await self.get_user_elo(user_id)
             points, total_points = (
@@ -1376,7 +1374,6 @@ class EconELO(interactions.Extension):
                 int(daily_reward),
                 "daily",
                 "Daily reward claim",
-                tax_type="claim",
             ):
                 await self.send_error(
                     ctx,
@@ -1464,7 +1461,6 @@ class EconELO(interactions.Extension):
                 int(reward_amount),
                 "role",
                 f"{claim_type.capitalize()} {role_name} role reward claim",
-                tax_type="claim",
             ):
                 await self.send_error(
                     ctx,
