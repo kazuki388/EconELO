@@ -1448,15 +1448,18 @@ class EconELO(interactions.Extension):
                 "yearly": 31536000,
             }
 
-            if (last_claim := role_status.get(claim_type)) and (
-                time_since_claim := (now - last_claim).total_seconds()
-            ) < (interval := intervals[claim_type]):
-                remaining_time = int(interval - time_since_claim)
-                await self.send_error(
-                    ctx,
-                    f"You'll need to wait {timedelta(seconds=remaining_time)} until {format_discord_timestamp(last_claim + timedelta(seconds=interval))} before claiming your {claim_type} role reward again.",
-                )
-                return
+            last_claim_str = role_status.get(claim_type)
+            if last_claim_str:
+                last_claim = datetime.fromisoformat(last_claim_str)
+                time_since_claim = (now - last_claim).total_seconds()
+                interval = intervals[claim_type]
+                if time_since_claim < interval:
+                    remaining_time = int(interval - time_since_claim)
+                    await self.send_error(
+                        ctx,
+                        f"You'll need to wait {timedelta(seconds=remaining_time)} until {format_discord_timestamp(last_claim + timedelta(seconds=interval))} before claiming your {claim_type} role reward again.",
+                    )
+                    return
 
             final_amount, tax_amount = await self.model.calculate_tax(int(reward_amount), "claim")
             emit_result = await self.model.emit_points(
@@ -1473,7 +1476,7 @@ class EconELO(interactions.Extension):
                 )
                 return
 
-            user_elo["role_status"] = {**role_status, claim_type: now}
+            user_elo["role_status"] = {**role_status, claim_type: now.isoformat()}
             await self.model.update_user_elo(author_id, user_elo)
 
             tax_rate = round((tax_amount / reward_amount) * 100, 2)
