@@ -41,6 +41,11 @@ logger.addHandler(file_handler)
 # Model
 
 
+def format_discord_timestamp(dt: datetime) -> str:
+    unix_ts = int(dt.timestamp())
+    return f"<t:{unix_ts}:F> (<t:{unix_ts}:R>)"
+
+
 class EmbedColor(Enum):
     OFF = 0x5D5A58
     FATAL = 0xFF4343
@@ -563,13 +568,15 @@ class Model:
         self, user_id: str, amount: int, reason: str, transaction_type: str
     ) -> None:
         logs = self.elo.setdefault("logs", [])
+        now = datetime.now(timezone.utc)
         logs[max(-999, -len(logs)) :] = [
             {
                 "user_id": user_id,
                 "amount": amount,
                 "reason": reason,
                 "type": transaction_type,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": now.isoformat(),
+                "formatted_timestamp": format_discord_timestamp(now),
             }
         ]
         await self.save_elo()
@@ -803,13 +810,13 @@ class EconELO(interactions.Extension):
         name="view", description="View your points balance, history and leaderboards"
     )
 
-    module_group_bank = module_base.group(
-        name="bank",
+    module_group_fed = module_base.group(
+        name="fed",
         description="Bank operations like transfers, deposits and withdrawals",
     )
 
     module_group_casino = module_base.group(
-        name="fed",
+        name="casino",
         description="Play games and gamble your points for a chance to win more",
     )
 
@@ -1206,11 +1213,11 @@ class EconELO(interactions.Extension):
             now = datetime.now(timezone.utc)
 
             if last_claim := user_elo.get("last_daily"):
-                if (time_delta := (now - last_claim).total_seconds()) < 86400:
-                    remaining = 86400 - time_delta
+                if (now - datetime.fromisoformat(last_claim)).total_seconds() < 86400:
+                    next_claim = datetime.fromisoformat(last_claim) + timedelta(days=1)
                     await self.send_error(
                         ctx,
-                        f"You can claim your daily reward again in {remaining // 3600:.0f}h {remaining % 3600 // 60:.0f}m",
+                        f"You can claim your daily reward again at {format_discord_timestamp(next_claim)}",
                     )
                     return
 
@@ -1304,24 +1311,15 @@ class EconELO(interactions.Extension):
                 "yearly": 31536000,
             }
 
-            if last_claim := role_status.get(claim_type):
-                if (delta := (now - last_claim).total_seconds()) < intervals[
-                    claim_type
-                ]:
-                    remaining = intervals[claim_type] - delta
-                    time_components = (
-                        (remaining // 86400, "d"),
-                        (remaining % 86400 // 3600, "h"),
-                        (remaining % 3600 // 60, "m"),
-                    )
-                    time_str = "".join(
-                        f"{int(v)}{u} " for v, u in time_components if v
-                    ).rstrip()
-                    await self.send_error(
-                        ctx,
-                        f"You can claim your {claim_type} role reward again in {time_str}",
-                    )
-                    return
+            if (last_claim := role_status.get(claim_type)) and (
+                time_since_claim := (now - last_claim).total_seconds()
+            ) < (interval := intervals[claim_type]):
+                remaining_time = int(interval - time_since_claim)
+                await self.send_error(
+                    ctx,
+                    f"You'll need to wait {timedelta(seconds=remaining_time)} until {format_discord_timestamp(last_claim + timedelta(seconds=interval))} before claiming your {claim_type} role reward again.",
+                )
+                return
 
             if not await self.model.emit_points(
                 author_id,
@@ -1331,7 +1329,7 @@ class EconELO(interactions.Extension):
             ):
                 await self.send_error(
                     ctx,
-                    f"Role {claim_type} rewards are currently unavailable. Please try again later.",
+                    f"Role `{claim_type}` rewards are currently unavailable. Please try again later.",
                 )
                 return
 
@@ -1340,7 +1338,7 @@ class EconELO(interactions.Extension):
 
             await self.send_success(
                 ctx,
-                f"You claimed your {claim_type} {role_name} reward of {reward_amount:,} points!",
+                f"You claimed your {claim_type} `{role_name}` reward of `{reward_amount:,}` points!",
                 log_to_channel=True,
             )
 
@@ -1484,7 +1482,7 @@ class EconELO(interactions.Extension):
                         "name": "Skills",
                         "value": str(
                             "- ".join(
-                                f"{skill.title()}: `{value}/100`"
+                                f"{skill.title()}: `{value}/100`\n"
                                 for skill, value in skills.items()
                             )
                         ),
@@ -1493,7 +1491,7 @@ class EconELO(interactions.Extension):
                 )
 
             embed = await self.create_embed(
-                title=f"{target_user.username}'s Profile",
+                title=f"{target_user.mention}'s Profile",
                 fields=[
                     {
                         "name": str(field["name"]),
@@ -2049,9 +2047,10 @@ class EconELO(interactions.Extension):
                         )
 
                 except asyncio.TimeoutError:
+                    timeout_time = datetime.now(timezone.utc) + timedelta(seconds=30)
                     await self.send_error(
                         ctx,
-                        "Time's up! Game over.",
+                        f"Time's up! Game over. Try again after {format_discord_timestamp(timeout_time)}.",
                     )
                     return
 
@@ -2166,7 +2165,7 @@ class EconELO(interactions.Extension):
                     for name, (_, emoji) in choices.items()
                 ]
 
-                challenge_msg = f"{opponent.mention}, {ctx.author.mention} challenges you to Rock Paper Scissors! Bet: {bet:,} points."
+                challenge_msg = f"{opponent.mention}: {ctx.author.mention} challenges you to Rock Paper Scissors! Bet: {bet:,} points."
 
                 action_row = interactions.ActionRow(*buttons)
                 await ctx.send(
@@ -2185,7 +2184,11 @@ class EconELO(interactions.Extension):
                     )
                     opponent_choice = component_ctx.ctx.custom_id.split("_")[1]
                 except asyncio.TimeoutError:
-                    await self.send_error(ctx, "Challenge timed out!")
+                    timeout_time = datetime.now(timezone.utc) + timedelta(seconds=30)
+                    await self.send_error(
+                        ctx,
+                        f"Challenge timed out! Try again {format_discord_timestamp(timeout_time)}.",
+                    )
                     return
 
             else:
@@ -2244,11 +2247,15 @@ class EconELO(interactions.Extension):
                         {
                             "total_bets": fed_state["total_bets"] + bet,
                             "balance": fed_state["reserve"] - points_delta,
-                            "total_payouts": fed_state["total_payouts"] + (points_delta if points_delta > 0 else 0),
+                            "total_payouts": fed_state["total_payouts"]
+                            + (points_delta if points_delta > 0 else 0),
                             "daily_emissions": {
                                 **fed_state["daily_emissions"],
-                                "casino_payouts": fed_state["daily_emissions"]["casino_payouts"] + (points_delta if points_delta > 0 else 0)
-                            }
+                                "casino_payouts": fed_state["daily_emissions"][
+                                    "casino_payouts"
+                                ]
+                                + (points_delta if points_delta > 0 else 0),
+                            },
                         }
                     )
                     user_data.setdefault("statistics", {}).update(
