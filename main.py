@@ -160,19 +160,19 @@ class Config:
 
     message_reward: dict[str, dict[str, Any]] = field(
         default_factory=lambda: {
-            "base": {"min": 1, "max": 5},
-            "daily_limit": {"base": 100, "variance": 50, "min": 50},
+            "base": {"min": 0, "max": 3},
+            "daily_limit": {"base": 40, "variance": 15, "min": 20},
             "bonuses": {
-                "length": {"threshold": 100, "points": 2},
-                "image": {"points": 3},
-                "link": {"points": 2},
-                "entropy": {"threshold": 0.7, "points": 3},
-                "engagement": {"replies": 2, "reactions": 1},
-                "quality": {"multiplier": 1.5},
+                "length": {"threshold": 200, "points": 2},
+                "image": {"points": 1},
+                "link": {"points": 1},
+                "entropy": {"threshold": 0.8, "points": 2},
+                "engagement": {"replies": 1, "reactions": 2},
+                "quality": {"multiplier": 1.1},
             },
             "penalties": {
-                "spam": {"threshold": 0.9, "multiplier": 0.5},
-                "repetition": {"threshold": 0.8, "multiplier": 0.7},
+                "spam": {"threshold": 0.5, "multiplier": 0.2},
+                "repetition": {"threshold": 0.4, "multiplier": 0.3},
             },
         }
     )
@@ -726,22 +726,13 @@ class EconELO(interactions.Extension):
 
         self.cfg = Config()
         self.OFFICER_ROLE_ID = self.cfg.admin_role_id
-        self.LOG_CHANNEL_ID = self.cfg.log_channel_id
         self.LOG_FORUM_ID = self.cfg.log_forum_id
         self.LOG_POST_ID = self.cfg.log_post_id
         self.GUILD_ID = self.cfg.guild_id
 
         self.REWARD_ROLES = set(self.cfg.reward_roles)
-        self.daily_reward = self.cfg.daily_points
-        self.role_rewards = self.cfg.reward_amounts
 
-        self.welcome_base_points = self.cfg.welcome_base_points
-        self.newbie_tasks = self.cfg.newbie_tasks
-
-        self.message_task = self.cfg.message_reward
         self.invite_task = self.cfg.invite_reward
-        self.response_task = self.cfg.reaction_reward
-        self.economy_control = self.cfg.economy_control
 
         asyncio.create_task(self.initialize_data())
 
@@ -808,9 +799,8 @@ class EconELO(interactions.Extension):
         return embed
 
     @functools.lru_cache(maxsize=1)
-    def get_log_channels(self) -> tuple[int, int, int]:
+    def get_log_channels(self) -> tuple[int, int]:
         return (
-            self.LOG_CHANNEL_ID,
             self.LOG_POST_ID,
             self.LOG_FORUM_ID,
         )
@@ -836,31 +826,8 @@ class EconELO(interactions.Extension):
             await ctx.send(embed=embed, ephemeral=ephemeral)
 
         if log_to_channel:
-            log_channel_id, log_post_id, log_forum_id = self.get_log_channels()
-            # await self.send_to_channel(log_channel_id, embed)
+            log_post_id, log_forum_id = self.get_log_channels()
             await self.send_to_forum_post(log_forum_id, log_post_id, embed)
-
-    # async def send_to_channel(self, channel_id: int, embed: interactions.Embed) -> None:
-    #     try:
-    #         channel = await self.bot.fetch_channel(channel_id)
-
-    #         if not isinstance(
-    #             channel := (
-    #                 channel if isinstance(channel, interactions.GuildText) else None
-    #             ),
-    #             interactions.GuildText,
-    #         ):
-    #             logger.error(f"Channel ID {channel_id} is not a valid text channel.")
-    #             return
-
-    #         await channel.send(embed=embed)
-
-    #     except NotFound as nf:
-    #         logger.error(f"Channel with ID {channel_id} not found: {nf!r}")
-    #     except Exception as e:
-    #         logger.error(
-    #             f"Error sending message to channel {channel_id}: {e!r}", exc_info=True
-    #         )
 
     async def send_to_forum_post(
         self, forum_id: int, post_id: int, embed: interactions.Embed
@@ -2822,17 +2789,27 @@ class EconELO(interactions.Extension):
         bonus_types = [
             (
                 "length",
-                lambda m: m[0] >= bonuses_cfg["length"].get("threshold", 100),
+                lambda m: m[0] >= bonuses_cfg["length"].get("threshold", 200),
                 "Long text",
-                2,
+                bonuses_cfg["length"].get("points", 2),
             ),
-            ("image", lambda m: m[1], "Contains image", 3),
-            ("link", lambda m: m[2], "Contains link", 2),
+            (
+                "image",
+                lambda m: m[1],
+                "Contains image",
+                bonuses_cfg["image"].get("points", 1),
+            ),
+            (
+                "link",
+                lambda m: m[2],
+                "Contains link",
+                bonuses_cfg["link"].get("points", 1),
+            ),
             (
                 "entropy",
-                lambda m: m[3] >= bonuses_cfg["entropy"].get("threshold", 0.7),
+                lambda m: m[3] >= bonuses_cfg["entropy"].get("threshold", 0.8),
                 "High quality content",
-                3,
+                bonuses_cfg["entropy"].get("points", 2),
             ),
         ]
 
@@ -2840,7 +2817,7 @@ class EconELO(interactions.Extension):
             if bonus_cfg := bonuses_cfg.get(bonus_type):
                 points = bonus_cfg.get("points", default_points)
                 if metric_val(content_metrics):
-                    bonus_conditions.append((True, points, f"{desc} +{points}"))
+                    bonus_conditions.append((True, points, f"{desc} +{points}."))
 
         base_points = points + sum(
             points_add for cond, points_add, _ in bonus_conditions if cond
@@ -2848,7 +2825,7 @@ class EconELO(interactions.Extension):
 
         return (
             (
-                int(base_points * bonuses_cfg["quality"].get("multiplier", 1.5))
+                int(base_points * bonuses_cfg["quality"].get("multiplier", 1.2))
                 if all(cond for cond, _, _ in bonus_conditions)
                 else base_points
             ),
@@ -2861,13 +2838,13 @@ class EconELO(interactions.Extension):
         seed = hash(f"{user_id}{today}") & 0xFFFFFFFF
         random.seed(seed)
         return max(
-            cfg.get("min", 50),
-            cfg.get("base", 100)
+            cfg.get("min", 20),
+            cfg.get("base", 40)
             + (
                 random.getrandbits(16)
-                & ((1 << cfg.get("variance", 50).bit_length() + 1) - 1)
+                & ((1 << cfg.get("variance", 15).bit_length() + 1) - 1)
             )
-            - cfg.get("variance", 50),
+            - cfg.get("variance", 15),
         )
 
     @interactions.listen(interactions.events.MessageCreate)
@@ -2951,7 +2928,7 @@ class EconELO(interactions.Extension):
                 try:
                     await self.send_success(
                         None,
-                        f"<@{user_id}> earned {points} points. {chr(10).join(bonuses)}.",
+                        f"<@{user_id}> earned {points} points. {' '.join(bonuses)}",
                         log_to_channel=True,
                     )
                 except Exception as e:
