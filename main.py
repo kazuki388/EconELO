@@ -72,7 +72,7 @@ class Config:
 
     log_channel_id: int = 1166627731916734504
     log_forum_id: int = 1159097493875871784
-    log_post_id: int = 1279118293936111707
+    log_post_id: int = 1325002509713936434
     status_roles: tuple[int, ...] = field(
         default_factory=lambda: (
             1200043628899356702,
@@ -837,30 +837,30 @@ class EconELO(interactions.Extension):
 
         if log_to_channel:
             log_channel_id, log_post_id, log_forum_id = self.get_log_channels()
-            await self.send_to_channel(log_channel_id, embed)
+            # await self.send_to_channel(log_channel_id, embed)
             await self.send_to_forum_post(log_forum_id, log_post_id, embed)
 
-    async def send_to_channel(self, channel_id: int, embed: interactions.Embed) -> None:
-        try:
-            channel = await self.bot.fetch_channel(channel_id)
+    # async def send_to_channel(self, channel_id: int, embed: interactions.Embed) -> None:
+    #     try:
+    #         channel = await self.bot.fetch_channel(channel_id)
 
-            if not isinstance(
-                channel := (
-                    channel if isinstance(channel, interactions.GuildText) else None
-                ),
-                interactions.GuildText,
-            ):
-                logger.error(f"Channel ID {channel_id} is not a valid text channel.")
-                return
+    #         if not isinstance(
+    #             channel := (
+    #                 channel if isinstance(channel, interactions.GuildText) else None
+    #             ),
+    #             interactions.GuildText,
+    #         ):
+    #             logger.error(f"Channel ID {channel_id} is not a valid text channel.")
+    #             return
 
-            await channel.send(embed=embed)
+    #         await channel.send(embed=embed)
 
-        except NotFound as nf:
-            logger.error(f"Channel with ID {channel_id} not found: {nf!r}")
-        except Exception as e:
-            logger.error(
-                f"Error sending message to channel {channel_id}: {e!r}", exc_info=True
-            )
+    #     except NotFound as nf:
+    #         logger.error(f"Channel with ID {channel_id} not found: {nf!r}")
+    #     except Exception as e:
+    #         logger.error(
+    #             f"Error sending message to channel {channel_id}: {e!r}", exc_info=True
+    #         )
 
     async def send_to_forum_post(
         self, forum_id: int, post_id: int, embed: interactions.Embed
