@@ -943,8 +943,8 @@ class EconELO(interactions.Extension):
 
         try:
             fed_state = self.model.fed_state
-            previous_balance = fed_state["balance"]
-            fed_state["balance"] += amount
+            previous_balance = fed_state["reserve"]
+            fed_state["reserve"] += amount
 
             await self.model.update_market_state()
             await self.model.log_points_transaction(
@@ -1787,7 +1787,7 @@ class EconELO(interactions.Extension):
                 fed_state.update(
                     {
                         "total_bets": fed_state["total_bets"] + bet,
-                        "balance": fed_state["balance"] - points_delta,
+                        "balance": fed_state["reserve"] - points_delta,
                         "total_payouts": fed_state["total_payouts"]
                         + (points_delta if won else 0),
                         "total_debt": fed_state.get("total_debt", 0)
@@ -2017,7 +2017,7 @@ class EconELO(interactions.Extension):
                 fed_state.update(
                     {
                         "total_bets": fed_state["total_bets"] + bet,
-                        "balance": fed_state["balance"] - points_delta,
+                        "balance": fed_state["reserve"] - points_delta,
                         "total_payouts": fed_state["total_payouts"]
                         + (points_delta if won else 0),
                     }
@@ -2157,7 +2157,7 @@ class EconELO(interactions.Extension):
                         fed_state = self.model.fed_state
                         fed_state |= {
                             "total_bets": fed_state["total_bets"] + bet,
-                            "balance": fed_state["balance"] - points_delta,
+                            "balance": fed_state["reserve"] - points_delta,
                             "total_payouts": fed_state["total_payouts"] + points_delta,
                         }
 
@@ -2217,7 +2217,7 @@ class EconELO(interactions.Extension):
             fed_state = self.model.fed_state
             fed_state |= {
                 "total_bets": fed_state["total_bets"] + bet,
-                "balance": fed_state["balance"] - points_delta,
+                "balance": fed_state["reserve"] - points_delta,
             }
 
             user_data.setdefault("statistics", {}).update(
