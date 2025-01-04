@@ -2129,10 +2129,10 @@ class EconELO(interactions.Extension):
 
             def check(m):
                 return (
-                    m.author.id == ctx.author.id
-                    and m.channel_id == ctx.channel_id
-                    and m.content.isdigit()
-                    and 1 <= int(m.content) <= 100
+                    m.message.author.id == ctx.author.id
+                    and m.message.channel_id == ctx.channel_id
+                    and m.message.content.isdigit()
+                    and 1 <= int(m.message.content) <= 100
                 )
 
             while rounds_left:
@@ -3188,7 +3188,6 @@ class EconELO(interactions.Extension):
             embed = await self.create_embed(
                 title="EconELO System Help",
                 description="Welcome to the EconELO economy system! Here's what you need to know:",
-                color=EmbedColor.INFO,
             )
 
             fields = [
@@ -3241,7 +3240,6 @@ class EconELO(interactions.Extension):
             embed = await self.create_embed(
                 title="Casino Games Help",
                 description="Try your luck with various casino games! Here are the available games:",
-                color=EmbedColor.INFO,
             )
 
             fields = [
@@ -3307,7 +3305,6 @@ class EconELO(interactions.Extension):
             embed = await self.create_embed(
                 title="Claiming Rewards Help",
                 description="Learn how to claim various rewards in the EconELO system:",
-                color=EmbedColor.INFO,
             )
 
             fields = [
@@ -3370,7 +3367,6 @@ class EconELO(interactions.Extension):
             embed = await self.create_embed(
                 title="Viewing Information Help",
                 description="Learn how to view various statistics and information:",
-                color=EmbedColor.INFO,
             )
 
             fields = [
