@@ -438,10 +438,8 @@ class Model:
             dirname = os.path.dirname(ELO_FILE)
             os.makedirs(dirname, exist_ok=True)
 
-            temp_file = f"{ELO_FILE}.tmp"
-            async with aiofiles.open(temp_file, mode="wb") as f:
+            async with aiofiles.open(ELO_FILE, mode="wb") as f:
                 await f.write(serialized)
-            os.replace(temp_file, ELO_FILE)
 
         except (IOError, orjson.JSONEncodeError) as e:
             logger.error("Failed to save ELO data: %r", e)
@@ -1762,7 +1760,7 @@ class EconELO(interactions.Extension):
 
             else:
                 max_bet = int(
-                    self.model.fed_state["balance"]
+                    self.model.fed_state["reserve"]
                     * self.model.cfg.fed["max_bet_ratio"]
                 )
                 adjusted_bet = int(bet * bet_multiplier)
@@ -1977,7 +1975,7 @@ class EconELO(interactions.Extension):
 
             else:
                 max_bet = int(
-                    self.model.fed_state["balance"]
+                    self.model.fed_state["reserve"]
                     * self.model.cfg.fed["max_bet_ratio"]
                 )
                 if bet > max_bet:
@@ -2103,7 +2101,7 @@ class EconELO(interactions.Extension):
             current_points = user_data.get("points", 0)
 
             max_bet = int(
-                self.model.fed_state["balance"] * self.model.cfg.fed["max_bet_ratio"]
+                self.model.fed_state["reserve"] * self.model.cfg.fed["max_bet_ratio"]
             )
             if bet > max_bet or bet > current_points:
                 await self.send_error(
@@ -2356,7 +2354,7 @@ class EconELO(interactions.Extension):
 
             else:
                 max_bet = int(
-                    self.model.fed_state["balance"]
+                    self.model.fed_state["reserve"]
                     * self.model.cfg.fed["max_bet_ratio"]
                 )
                 if bet > max_bet:
