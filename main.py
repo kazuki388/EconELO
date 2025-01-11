@@ -1466,9 +1466,22 @@ class EconELO(interactions.Extension):
     @module_group_view.subcommand(
         "leaderboard", sub_cmd_description="View points leaderboard"
     )
+    @interactions.slash_option(
+        name="limit",
+        description="Number of users to show",
+        opt_type=interactions.OptionType.INTEGER,
+        required=False,
+        choices=[
+            interactions.SlashCommandChoice(name="Top 10", value=10),
+            interactions.SlashCommandChoice(name="Top 50", value=50),
+            interactions.SlashCommandChoice(name="Top 100", value=100),
+            interactions.SlashCommandChoice(name="All", value=0),
+        ],
+    )
     async def view_leaderboard(
         self,
         ctx: interactions.SlashContext,
+        limit: Optional[int] = 10,
     ) -> None:
         try:
             await ctx.defer()
@@ -1484,6 +1497,9 @@ class EconELO(interactions.Extension):
                 key=lambda x: (x[1].get("points", 0), -int(x[0])),
                 reverse=True,
             )
+
+            if limit is not None and limit > 0:
+                sorted_users = sorted_users[:limit]
 
             chunk_size = 10
             user_chunks = [
