@@ -1313,8 +1313,13 @@ class EconELO(interactions.Extension):
             now = datetime.now(timezone.utc)
 
             if last_claim := user_elo.get("last_daily"):
-                if (now - datetime.fromisoformat(last_claim)).total_seconds() < 86400:
-                    next_claim = datetime.fromisoformat(last_claim) + timedelta(days=1)
+                if isinstance(last_claim, datetime):
+                    last_claim_dt = last_claim
+                else:
+                    last_claim_dt = datetime.fromisoformat(str(last_claim))
+
+                if (now - last_claim_dt).total_seconds() < 86400:
+                    next_claim = last_claim_dt + timedelta(days=1)
                     await self.send_error(
                         ctx,
                         f"You can claim your daily reward again at {format_discord_timestamp(next_claim)}",
@@ -1352,7 +1357,7 @@ class EconELO(interactions.Extension):
                 )
                 return
 
-            user_elo["last_daily"] = now
+            user_elo["last_daily"] = now.isoformat()
             user_elo["streaks"] = {
                 **user_elo.get("streaks", {}),
                 "daily_login": user_elo.get("streaks", {}).get("daily_login", 0) + 1,
